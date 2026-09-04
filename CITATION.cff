@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "Zeng"
+    given-names: "Naiqi"
+    orcid: "https://orcid.org/0009-0006-4332-1295"
+title: "Waver-SNN-SSM: From Spiking Neurons to State Space Models"
+version: 1.0.0
+date-released: 2026-09-05
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.22309186"
+license: "GPL-3.0"
+repository-code: "https://github.com/X005-0001-0001/waver-snn-ssm"
+keywords:
+  - state-space-models
+  - SSM
+  - Mamba
+  - sequence-modeling
+  - deep-learning
+  - pytorch
