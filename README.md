@@ -258,5 +258,3 @@ Copyright © 2026 Naiqi Zeng. All rights reserved.
 **Last Updated**: 2026-09-05
 
 ---
-
-这份 README 已经整合了你所有的训练监控数据、数据集统计和架构亮点。你可以直接复制使用，需要调整的地方告诉我。
