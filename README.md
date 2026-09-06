@@ -105,6 +105,8 @@ python 312002proplus_elite.py
 
 完整日志：supernovellog.txt
 
+![test](/1.png)
+
 ### 📂 数据集信息
 
 | 属性 | 值 |
