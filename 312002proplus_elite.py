@@ -128,7 +128,7 @@ MINI_STATE_DIM = 2            # 迷你状态维度，必须偶数，K = MINI_STA
 # ============================================================
 # 余弦退火重启调度器参数
 # ============================================================
-COSINE_T_0 = 1000            # 第一个余弦周期的步数（步数到达后重启学习率）
+COSINE_T_0 = 10000            # 第一个余弦周期的步数（步数到达后重启学习率）
 COSINE_T_MULT = 1            # 每次重启后周期倍数（1=固定周期，2=周期翻倍）
 COSINE_ETA_MIN = 1e-6        # 学习率下限（余弦退火的最低点，防止学习率归零）
 
@@ -2831,6 +2831,21 @@ def ultra_grpo_menu(model: WaveSNN, tokenizer: FastBPE):
                      epochs, group_size, max_new_tokens, lr, inner_steps,
                      clip_epsilon, old_policy_penalty)
 
+def load_brain_pt_into(model: WaveSNN) -> bool:
+    """将 brain.pt 加载到模型；checkpoint 临时放到内存，写入后立即释放。返回 False 表示 brain.pt 不存在。"""
+    if not os.path.exists("brain.pt"):
+        return False
+    checkpoint = torch.load("brain.pt", map_location='cpu', weights_only=False)
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
+    del checkpoint
+    if DEVICE.type == 'cuda':
+        torch.cuda.empty_cache()
+    return True
+
+
 # ------------------------------------------------------------
 # 主菜单
 # ------------------------------------------------------------
@@ -2940,25 +2955,33 @@ def main():
 
     setup_model_token_ids(model, tokenizer)
 
+    model_loaded = False
     if os.path.exists("brain.pt"):
-        try:
-            checkpoint = torch.load("brain.pt", map_location=DEVICE, weights_only=False)
-            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-                log_and_print("已加载 brain.pt 中的模型参数。")
-            else:
-                model.load_state_dict(checkpoint)
-                log_and_print("已加载 brain.pt 模型权重（旧格式）。")
-        except Exception as e:
-            log_and_print(f"Model load failed: {e}. Stopping to avoid accidental random initialization.")
-            close_log_file()
-            return
+        log_and_print("检测到 brain.pt，训练或对话时按需加载（避免启动即占用冗余显存）。")
     else:
         log_and_print("未找到 brain.pt，使用随机初始化模型。")
 
+    def ensure_model_loaded() -> bool:
+        """首次用到模型时，若 brain.pt 存在则加载（checkpoint 临时放内存，写入后立即释放）。"""
+        nonlocal model_loaded
+        if model_loaded:
+            return True
+        if not os.path.exists("brain.pt"):
+            return False
+        try:
+            load_brain_pt_into(model)
+            setup_model_token_ids(model, tokenizer)
+        except Exception as e:
+            log_and_print(f"加载 brain.pt 失败: {e}。为避免随机初始化误训练，程序退出。")
+            close_log_file()
+            raise SystemExit(1)
+        model_loaded = True
+        log_and_print("已加载 brain.pt 模型权重。")
+        return True
+
     while True:
         print("\n=== Wave-SNN 训练与对话系统菜单 ===")
-        print("1. 从头训练模型")
+        print("1. 训练模型（继续训练）")
         print("2. 对话模式")
         print("3. 保存模型")
         print("4. 加载模型")
@@ -2974,13 +2997,16 @@ def main():
             data_path, file_ext = select_training_file()
             if data_path is None:
                 continue
-            if input("开始从头训练？(y/n): ").lower() == 'y':
+            if not ensure_model_loaded():
+                log_and_print("未找到 brain.pt，使用随机初始化模型从头训练。")
+            if input("开始训练？(y/n): ").lower() == 'y':
                 train_from_scratch(model, tokenizer, data_path,
                                    BATCH_SIZE, EPOCHS, LEARNING_RATE, WEIGHT_DECAY,
                                    GRAD_CLIP_NORM, LOG_INTERVAL,
                                    accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
                                    file_type=file_ext)
         elif choice == '2':
+            ensure_model_loaded()
             chat_mode = input("对话格式 (jsonl) 还是纯文本续写 (txt)？[jsonl]: ").strip().lower()
             if chat_mode not in ("jsonl", "txt"):
                 chat_mode = "jsonl"
@@ -2992,17 +3018,17 @@ def main():
                     'epoch': 0}
                 torch.save(save_dict, "brain.pt")
                 log_and_print("Model saved to brain.pt.")
+                model_loaded = True
             except Exception as e:
                 log_and_print(f"保存失败: {e}")
         elif choice == '4':
             try:
-                checkpoint = torch.load("brain.pt", map_location=DEVICE, weights_only=False)
-                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                    model.load_state_dict(checkpoint['model_state_dict'])
+                if load_brain_pt_into(model):
+                    setup_model_token_ids(model, tokenizer)
+                    log_and_print("模型加载成功。")
+                    model_loaded = True
                 else:
-                    model.load_state_dict(checkpoint)
-                setup_model_token_ids(model, tokenizer)
-                log_and_print("模型加载成功。")
+                    log_and_print("未找到 brain.pt。")
             except Exception as e:
                 log_and_print(f"Model load failed: {e}. Stopping to avoid accidental random initialization.")
                 close_log_file()
@@ -3027,10 +3053,13 @@ def main():
             log_and_print("架构：对角复数波神经元 + 并行前缀扫描 + 层间RMSNorm + 残差")
             log_and_print(f"读取方式：全局摘要器（SUMMARY_TYPE='{SUMMARY_TYPE}'，写入 cat([I_gated_norm, g])，读取 input_mod_linear(I)+global_mod_linear(g)）")
         elif choice == '7':
+            ensure_model_loaded()
             ultra_rejection_sampling_menu(model, tokenizer)
         elif choice == '8':
+            ensure_model_loaded()
             ultra_rule_rl_menu(model, tokenizer)
         elif choice == '9':
+            ensure_model_loaded()
             ultra_grpo_menu(model, tokenizer)
         elif choice == '10':
             break
