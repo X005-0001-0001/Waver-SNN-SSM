@@ -105,6 +105,7 @@ python 312002proplus_elite.py
 
 完整日志：supernovellog.txt
 
+测试输入效果：
 ![test](/1.png)
 
 ### 📂 数据集信息
