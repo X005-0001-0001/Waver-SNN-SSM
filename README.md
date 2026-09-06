@@ -74,7 +74,7 @@ python 312002proplus_elite.py
 > 这是一个 **1.6B 参数模型**在 **约13M token 数据**上训练了 1 个 epoch 的状态。参考 Chinchilla 定律，1.6B 模型的最优训练数据量约为 **320 亿 token**，当前数据量仅为最优值的 **~4%**。**在如此悬殊的数据-参数比下，模型能稳定将 Loss 从初始的 ~10 降到 ~5，PPL 从 ~49000 降到 ~200，本身就是架构有效性的有力证据。**
 
 ### 📈 训练曲线总览
-
+supernovel训练总览
 ![训练总览](plots/overview.png)
 
 *上图展示了 Loss、PPL、Activity、LR 和 Memory 的全流程变化曲线。*
