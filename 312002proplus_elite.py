@@ -273,6 +273,7 @@ class FastBPE:
         self.user_token_id = None
         self.assistant_token_id = None
         self.end_token_id = None
+        self._vocab_size_cache = None
 
     def train(self, texts: List[str], verbose: bool = False):
         """
@@ -295,6 +296,7 @@ class FastBPE:
         if self._tokenizer is None:
             return
         vocab = self._tokenizer.get_vocab()
+        self._vocab_size_cache = self._tokenizer.get_vocab_size()
         self.bos_token_id = vocab.get('<|bos|>', 0)
         self.eos_token_id = vocab.get('<|eos|>', 1)
         self.pad_token_id = vocab.get('<|pad|>', 2)
@@ -308,7 +310,7 @@ class FastBPE:
             raise RuntimeError("Tokenizer 未训练或未加载")
         norm_text = normalize_text(text)
         ids = self._tokenizer.encode(norm_text).ids
-        return [tid if tid < self._tokenizer.get_vocab_size() else self.unk_token_id for tid in ids]
+        return [tid if tid < self._vocab_size_cache else self.unk_token_id for tid in ids]
 
     def decode(self, ids: List[int]) -> str:
         if self._tokenizer is None:
@@ -369,7 +371,9 @@ class FastBPE:
     def vocab_size(self) -> int:
         if self._tokenizer is None:
             return len(self.special_tokens_list)
-        return self._tokenizer.get_vocab_size()
+        if self._vocab_size_cache is None:
+            self._vocab_size_cache = self._tokenizer.get_vocab_size()
+        return self._vocab_size_cache
 
 # ------------------------------------------------------------
 # 学习率调度器
@@ -3036,5 +3040,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
