@@ -60,7 +60,7 @@ Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发，最终演进到与
 ## 🚀 快速开始
 
 ### 1. 安装依赖
-```bash
+
 pip install -r requirements.txt
 依赖项：
 
