@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>对照实验 - 训练曲线比较</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0d1117;font-family:monospace}
+  #vw{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:40px}
+  #img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;
+       box-shadow:0 0 30px rgba(0,0,0,.6)}
+  #st{position:fixed;top:6px;right:10px;color:#58a6ff;font:12px monospace;z-index:9;
+      background:rgba(0,0,0,.5);padding:2px 8px;border-radius:4px}
+  #nav{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:9;flex-wrap:wrap;justify-content:center}
+  #nav button{background:rgba(88,166,255,.2);border:1px solid #58a6ff;color:#58a6ff;
+              padding:6px 14px;border-radius:4px;cursor:pointer;font:12px monospace}
+  #nav button:hover{background:rgba(88,166,255,.4)}
+  #nav button.active{background:#58a6ff;color:#0d1117}
+  #legend{position:fixed;top:6px;left:10px;color:#8b949e;font:11px monospace;z-index:9;
+      background:rgba(0,0,0,.7);padding:8px 12px;border-radius:4px}
+  #legend div{margin:2px 0}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+</style>
+</head>
+<body>
+<div id="st" title="右键点击图可查看/刷新"></div>
+<div id="legend">
+  <div><span class="dot" style="background:#58a6ff"></span>transformer1</div>
+  <div><span class="dot" style="background:#f0883e"></span>waver1</div>
+</div>
+<div id="vw"><img id="img" alt="compare"></div>
+<div id="nav">
+  <button class="active" onclick="switchImg('loss.png',this)">Loss</button>
+  <button onclick="switchImg('ppl.png',this)">PPL</button>
+  <button onclick="switchImg('activity.png',this)">Activity</button>
+  <button onclick="switchImg('lr.png',this)">LR</button>
+  <button onclick="switchImg('memory.png',this)">Memory</button>
+</div>
+<script>
+const img=document.getElementById('img');
+const st=document.getElementById('st');
+let n=0,curSrc='loss.png';
+function bump(){
+  img.src=curSrc+'?t='+Date.now()+'&n='+(n++);
+  st.textContent=new Date().toLocaleTimeString()+'  (点图刷新)';
+}
+function switchImg(src,btn){
+  curSrc=src;
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  bump();
+}
+img.onload=()=>{bump();};
+img.onerror=()=>{st.textContent=curSrc+' 未找到，重试中...';setTimeout(bump,2000);};
+bump();
+setInterval(()=>{
+  const t=new Image();
+  t.onload=()=>{img.src=curSrc+'?t='+Date.now()+'&n='+(n++);st.textContent=new Date().toLocaleTimeString();};
+  t.onerror=()=>{st.textContent=curSrc+' 未找到';};
+  t.src=curSrc+'?t='+Date.now();
+},3000);
+</script>
+</body>
+</html>
