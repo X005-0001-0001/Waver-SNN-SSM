@@ -18,7 +18,7 @@ Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发，最终演进到与
 数据集：自制中文名著小说数据集
 本次对照实验采用严格控制变量设置：对照组为标准 Transformer 架构，与 Waver-SNN-SSM 使用完全相同的分词词表、训练数据集、优化器策略与全部训练超参数。为确保对比基准的公允性，对照组通过提升隐藏层维度，使总参数量略高于 Waver 模型 ——Transformer 参数量为 **9,479,154**，Waver 模型参数量为 **9,292,338**；（Transform模型初始化因为网络特点略微不同），在 Transformer 参数量占优、维度更高的前提下进行同等条件训练。
 
-![训练总览](./v2/对照测试结果/对照任务1：自制中文名著数据集5epoch/结果/loss.png)
+![训练总览](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v2/%E5%AF%B9%E7%85%A7%E6%B5%8B%E8%AF%95%E7%BB%93%E6%9E%9C/%E5%AF%B9%E7%85%A7%E4%BB%BB%E5%8A%A11%EF%BC%9A%E8%87%AA%E5%88%B6%E4%B8%AD%E6%96%87%E5%90%8D%E8%91%97%E6%95%B0%E6%8D%AE%E9%9B%865epoch/%E7%BB%93%E6%9E%9C/loss.png)
 
 从训练损失对比曲线可见：Waver 模型在全训练流程中损失下降速度始终快于经典 Transformer，最终收敛的损失值也稳定低于 Transformer 基线。在自身参数量更少、状态维度更小的条件下，Waver-SNN-SSM 仍然取得了更优的序列建模效果与更快的收敛速度，验证了本项目状态空间架构与复数实值化重构方案的性能优势。
 
@@ -43,9 +43,9 @@ Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发，最终演进到与
 
 ## 📖 项目亮点
 - **彻底的复数化（Complex-to-Real 2×2 块同构）**  
-  在代数层面实现"无复数"的复数 SSM，安全开启 BF16 AMP 加速。每个复矩阵元 `a+bi` 被替换为实矩阵 `[[a, -b], [b, a]]`，实虚通道自然交替，无任何 complex 类型的中间张量。
+  在代数层面实现“无复数”的复数 SSM，安全开启 BF16 AMP 加速。每个复矩阵元 `a+bi` 被替换为实矩阵 `[[a, -b], [b, a]]`，实虚通道自然交替，无任何 complex 类型的中间张量。
 
-- **可选的"读写头"（全局摘要器）**  
+- **可选的“读写头”（全局摘要器）**  
   独创 Mean / LinearAttention / MiniWave 三种全局摘要器，为 SSM 提供显式的全局信息参考，弥补 SSM 固有的上下文压缩局限。
 
 - **更灵活的层内耦合（Intra-layer Coupling）**  
@@ -54,7 +54,7 @@ Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发，最终演进到与
 - **完整的 MoE 集成与工业级优化**  
   集成 MoE-FFN（SwiGLU 专家 + Top-K 路由），包含 Expert Offload（CPU 卸载）、独立 Copy Stream 异步搬运、FP8/NVFP4/BF16 量化、Weight Normalization 等全套优化方案。
 
-- **"单文件 + 全配置"的工程化典范**  
+- **“单文件 + 全配置”的工程化典范**  
   训练、推理、强化学习（GRPO/RL）全流程单文件封装，所有超参数均通过顶部常量集中控制，实验可复现性极强。
 
 - **跨平台稳定**  
@@ -98,11 +98,11 @@ python 312003elite.py
 这是一个 1.6B 参数模型在约 17.9M token 数据上训练了 1 个 epoch 的状态。参考 Chinchilla 定律，1.6B 模型的最优训练数据量约为 320 亿 token，当前数据量仅为最优值的 ~4%。在如此悬殊的数据-参数比下，模型能稳定将 Loss 从初始的 ~10 降到 ~5，PPL 从 ~49000 降到 ~200，本身就是架构有效性的有力证据。
 
 ### 📈 312002 训练曲线三段合集总览
-![训练总览](./v1/log合集看原图/把所有日志拼一块plots/overview.png)
+![训练总览](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v1/log%E5%90%88%E9%9B%86%E7%9C%8B%E5%8E%9F%E5%9B%BE/%E6%8A%8A%E6%89%80%E6%9C%89%E6%97%A5%E5%BF%97%E6%8B%BC%E4%B8%80%E5%9D%97plots/overview.png)
 
-![层统计总览](./v1/log合集看原图/把所有日志拼一块plots/layer_stats.png)
+![层统计总览](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v1/log%E5%90%88%E9%9B%86%E7%9C%8B%E5%8E%9F%E5%9B%BE/%E6%8A%8A%E6%89%80%E6%9C%89%E6%97%A5%E5%BF%97%E6%8B%BC%E4%B8%80%E5%9D%97plots/layer_stats.png)
 
-![监控参数总览](./v1/log合集看原图/把所有日志拼一块plots/mon_params.png)
+![监控参数总览](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v1/log%E5%90%88%E9%9B%86%E7%9C%8B%E5%8E%9F%E5%9B%BE/%E6%8A%8A%E6%89%80%E6%9C%89%E6%97%A5%E5%BF%97%E6%8B%BC%E4%B8%80%E5%9D%97plots/mon_params.png)
 
 上图展示了 Loss、PPL、Activity、LR 和 Memory 的全流程变化曲线，以及层统计和监控参数总览。  
 完整日志：详见 `v1` 文件夹内各个阶段的 `traininglog`。
@@ -143,7 +143,7 @@ Dataset: Custom Chinese classic novel dataset
 
 This controlled experiment adopts strictly controlled settings: the control group uses a standard Transformer architecture, with the exact same tokenizer vocabulary, training dataset, optimizer strategy, and all training hyperparameters as the Waver-SNN-SSM model. To ensure fairness in the benchmark, the control group increases the hidden dimension so that its total parameter count is slightly higher than that of the Waver model — the Transformer has 9,479,154 parameters, while the Waver model has 9,292,338 parameters (the Transformer has slightly different initialisation due to its network characteristics). Both models are trained under identical conditions, with the Transformer having more parameters and a larger dimension.
 
-![Training Loss Comparison](./v2/对照测试结果/对照任务1：自制中文名著数据集5epoch/结果/loss.png)
+![Training Loss Comparison](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v2/%E5%AF%B9%E7%85%A7%E6%B5%8B%E8%AF%95%E7%BB%93%E6%9E%9C/%E5%AF%B9%E7%85%A7%E4%BB%BB%E5%8A%A11%EF%BC%9A%E8%87%AA%E5%88%B6%E4%B8%AD%E6%96%87%E5%90%8D%E8%91%97%E6%95%B0%E6%8D%AE%E9%9B%865epoch/%E7%BB%93%E6%9E%9C/loss.png)
 
 As seen from the training loss comparison curves: the Waver model consistently converges faster than the classic Transformer throughout the entire training process, and its final converged loss value is also stably lower than the Transformer baseline. Despite having fewer parameters and a smaller state dimension, the Waver-SNN-SSM achieves superior sequence modelling performance and faster convergence, validating the performance advantages of our state-space architecture and complex-to-real reconstruction approach.
 
@@ -223,11 +223,11 @@ Then follow the menu prompt and select `1. Train model (continue training)`, cho
 This is a 1.6B parameter model trained on ~17.9M tokens for 1 epoch. According to the Chinchilla scaling law, the optimal training data for a 1.6B model is about 32B tokens; current data is only ~4% of optimum. Under such extreme data-parameter ratio, the model's ability to stably reduce Loss from ~10 to ~5 and PPL from ~49,000 to ~200 is itself strong evidence of architectural effectiveness.
 
 ### 📈 312002 Training Curves – Three-Segment Combined Overview
-![Training Overview](./v1/log合集看原图/把所有日志拼一块plots/overview.png)
+![Training Overview](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v1/log%E5%90%88%E9%9B%86%E7%9C%8B%E5%8E%9F%E5%9B%BE/%E6%8A%8A%E6%89%80%E6%9C%89%E6%97%A5%E5%BF%97%E6%8B%BC%E4%B8%80%E5%9D%97plots/overview.png)
 
-![Layer Statistics Overview](./v1/log合集看原图/把所有日志拼一块plots/layer_stats.png)
+![Layer Statistics Overview](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v1/log%E5%90%88%E9%9B%86%E7%9C%8B%E5%8E%9F%E5%9B%BE/%E6%8A%8A%E6%89%80%E6%9C%89%E6%97%A5%E5%BF%97%E6%8B%BC%E4%B8%80%E5%9D%97plots/layer_stats.png)
 
-![Monitor Parameters Overview](./v1/log合集看原图/把所有日志拼一块plots/mon_params.png)
+![Monitor Parameters Overview](https://raw.githubusercontent.com/X005-0001-0001/Waver-SNN-SSM/main/v1/log%E5%90%88%E9%9B%86%E7%9C%8B%E5%8E%9F%E5%9B%BE/%E6%8A%8A%E6%89%80%E6%9C%89%E6%97%A5%E5%BF%97%E6%8B%BC%E4%B8%80%E5%9D%97plots/mon_params.png)
 
 The figures show Loss, PPL, Activity, LR, Memory over the full process, as well as layer statistics and monitored parameters.  
 Full logs: see `traininglog` in each phase under the `v1` folder.
