@@ -12,7 +12,9 @@ Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发，最终演进到与
 
 <details open>
 <summary>📖 中文文档</summary>
-### v3以后的文档还没写，直接用v4.1就行
+
+## v3以后的文档还没写，直接用v4.1就行
+
 ### 📊 v2.0.0 对照实验
 
 #### 实验1：与经典 Transformer 基准对比
