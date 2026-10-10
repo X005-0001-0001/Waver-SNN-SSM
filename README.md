@@ -8,7 +8,7 @@
 
 Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发、最终与 Mamba-3 理念殊途同归的高效状态空间模型（SSM）实现。核心创新在于把复值 SSM 的复数算子完整替换为**实值 2×2 块同构**，在代数层面实现“无复数”的复数 SSM，从而安全启用 BF16 混合精度训练，大幅降低显存占用并加速训练。
 
-> **当前最新：v5.0.0（2026-10-04）** —— 数据格式层（v5 schema）+ 词表 / 分词修复。
+> **当前最新：v6.0.0（2026-10-10）** —— 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用。
 
 ---
 
@@ -23,6 +23,7 @@ Waver-SNN-SSM/
 ├── v4.1/        # 稳定性更新与受控对照（310004elite）
 ├── v4.2/        # jsonl 显存碎片修复（312004elite）
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
+├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── compare/     # 精简对照实验（核心图 + 验证报告 + 看板工具）
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
@@ -43,16 +44,17 @@ Waver-SNN-SSM/
 | 4.0.0 | 2026-09-23 | Loop 机制（权重共享循环层）+ SSM 分块扫描 `SSM_CHUNK_SIZE` |
 | 4.1.0 | 2026-09-28 | 稳定性更新 + 与经典 Transformer 的受控对照（层内耦合开 / 关）|
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
-| **5.0.0** | **2026-10-04** | **数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简** |
+| 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
+| **6.0.0** | **2026-10-10** | **闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用** |
 
-## 🚀 v5.0.0 核心变更
+## 🚀 v6.0.0 核心变更
 
-- **数据格式层**：训练数据统一为 `messages` schema，支持 `reasoning_content`（思维链）与 `system` / `tools` / `tool_calls` 预留字段；模板化渲染 `render_messages` + offsets 掩码，**无新字段时与旧格式逐 token 等价**。
-- **流式安全前缀解码**：生成侧按字符边界安全解码，避免多字节字符被截断产生乱码。
-- **RL / GRPO 与 SFT 输出**同步迁移到 v5 schema。
-- **词表 / 分词修复**：`normalize_text` 模式化，新词表走 `ByteLevel`（保空格 / 换行 / 大小写、永不产生 `unk`），修掉“吞字吞空格”。
-- **配置精简**：`SUMMARY_TYPE` 合并为单常量开关，统一补 `id_cache`，移除凑数配置项。
-- **不再向后兼容**旧 `conversations` 外壳 / 旧词表元数据 / 旧题库（遇到即报错）。
+- **闭式矩阵指数（K=2）**：`USE_CLOSED_FORM_EXPM` —— 2×2 复矩阵 `exp(δ·Ω_t)` 走 Cayley–Hamilton 闭式，配级数小量保护；与 `torch.linalg.matrix_exp` **数学恒等**（fp64 相对差 ~1e-15），且**无 LAPACK 调用、可被 CUDA Graph 捕获**。
+- **解码 CUDA Graph 默认启用**：`USE_CUDA_GRAPH_DECODE=True`，抓图后对输出 `detach().clone()`，与 eager 逐位一致（12/12 抓图成功）。
+- **批量分词** `_encode_batch_with_offsets`：一次 `encode_batch` 一批，**保持 shuffle 时机与 rng 调用序列完全一致**（T0 排序哈希不变）。
+- **`_split_reasoning`** 同时支持 `think` / `thinking` 双标签。
+- **分词缓存键**纳入归一化模式 + `tokenizers` 库版本，避免跨配置误复用。
+- BlellochScanFn 去掉多余 clone；梯度检查点 `preserve_rng_state=False`；保留 `R_cpl` 缓存键（修复抓图失败）。
 
 ## 📖 核心特性
 
@@ -97,6 +99,7 @@ SwiGLU 混合专家：
 历史对照结果与复现脚本集中在 [`compare/`](./compare/)：
 
 - **v4.1** —— 与经典 Transformer 的受控对照（同词表 / 同优化器 / 参数量对齐）
+- **v6** —— 低精度方案（8-bit AdamW / FP8 / NVFP4）与训练侧加速验证报告 + 复现脚本
 - **看板工具** —— 只读训练日志、无第三方依赖的本地交互看板
 
 ## 🔧 使用
@@ -135,5 +138,5 @@ python v5/312005elite.py
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 本代码及相关文档的首次公开发布时间由 Zenodo DOI 10.5281/zenodo.22309186 锁定。任何未经授权的抄袭、洗稿或未注明来源的引用，均视为侵犯版权。
 
-Version: 5.0.0
-Last Updated: 2026-10-04
+Version: 6.0.0
+Last Updated: 2026-10-10

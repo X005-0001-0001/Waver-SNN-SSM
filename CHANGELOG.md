@@ -6,6 +6,22 @@
 
 ---
 
+## 6.0.0 — 2026-10-10
+
+### 新增
+- **闭式矩阵指数（K=2）** `USE_CLOSED_FORM_EXPM`：`exp(δ·Ω_t)` 走 2×2 复矩阵 Cayley–Hamilton 闭式 + 级数小量保护（`CF_EXPM_MIN_ABS_S2` / `CF_EXPM_SERIES_TERMS`）；与 `torch.linalg.matrix_exp` 数学恒等，**无 LAPACK、可被 CUDA Graph 捕获**。
+- **批量分词** `_encode_batch_with_offsets`：一次 `encode_batch` 一批，保持 shuffle 时机与 rng 序列完全一致。
+- `_split_reasoning` 同时支持 `think` / `thinking` 双标签。
+
+### 变更
+- `USE_CUDA_GRAPH_DECODE` 默认开启（12/12 抓图成功且与 eager 逐位一致）。
+- 分词缓存键纳入归一化模式 + `tokenizers` 版本。
+
+### 修复
+- 梯度检查点 `preserve_rng_state=False`；BlellochScanFn 去掉多余 clone；保留 `R_cpl` 缓存键（修复抓图区内惰性重算导致的抓图失败）。
+
+---
+
 ## 5.0.0 — 2026-10-04
 
 ### 新增
