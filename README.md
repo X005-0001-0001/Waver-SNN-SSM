@@ -59,7 +59,7 @@ Waver-SNN-SSM/
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── v7/          # 训练步 CUDA Graph + 8-bit AdamW（312007elite / 312507elite）
-├── compare/     # 精简对照实验（核心图 + 验证报告 + 看板工具）
+├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
@@ -133,39 +133,43 @@ SwiGLU 混合专家：
 
 ## 📊 对照实验（含图）
 
-历史对照结果与复现脚本集中在 [`compare/`](./compare/)。
+全部结果由 `对照测试/` 的原始训练日志**重新解析生成**，复现脚本与完整图集见 [`compare/`](./compare/)。
+统一条件：**同词表 / 同优化器 / 同超参数**，`H=256, L=3, T=2048, batch=1, lr=1e-3`，约 8.9 万步。
 
-### 1. Waver vs 经典 Transformer（v2 · 约 9.5M 参数 · 15.36M tokens）
+### 1. 第 3 轮受控对照：Waver / x25 vs 经典 Transformer
 
-严格控制变量：同词表、同优化器、同超参数；Transformer 参数量（9.48M）略高于 Waver（9.29M），结论更保守。
+三联图（训练 Loss · 验证 PPL · 相对基线 Loss 差值）：
 
-| 训练损失 | 验证 PPL |
-|---|---|
-| ![Waver vs Transformer loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/ppl.png) |
+![round3 main](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_main.png)
 
-> Waver 全训练流程损失下降更快、最终收敛值更低。
+> Waver v4.2 / x25 的训练 Loss 整体**略低于** Transformer 基线，验证 PPL 高度接近。
 
-### 2. 层内耦合（Intra-layer Coupling）开 / 关对照（v2）
+**多 seed 稳定性**（各 5 个 seed：42 / 43 / 114514 / 1919810 / 31415926）：
 
-![Coupling on/off](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test2nocoupling/compare_plots/loss.png)
+![waver seeds](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_seeds_waver.png)
 
-> 训练后期（过拟合阶段）**启用耦合**的模型展现微弱但稳定的优势。
+![x25 seeds](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_seeds_x25.png)
 
-### 3. v4.1 受控对照（同词表 / 同优化器 / 参数量对齐）
+![transformer seeds](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_seeds_transformer.png)
 
-| 训练损失 | 验证 PPL | 显存占用 |
+> Waver 的验证 PPL 在 5 个 seed 上**高度稳定**（31.1–31.6），Transformer 波动明显更大（22.3–30.0）。
+
+**消融与扫描**（完整 14 图见 [`compare/round3/`](./compare/round3/)）：
+
+| 学习率扫描（Waver） | 层内耦合系数消融 | 状态维度 K=4 |
 |---|---|---|
-| ![v4.1 loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/loss.png) | ![v4.1 ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/ppl.png) | ![v4.1 memory](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/memory.png) |
+| ![lr scan](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_lr_waver.png) | ![coupling](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_coupling.png) | ![k4](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_state_dim_k4.png) |
 
-更多曲线（对数轴 / 双对数轴 / 差值 / 学习率 / 激活）见 [`compare/v4.1/`](./compare/v4.1/)。
+> `lr=8e-3` 时明显恶化（印证复值 SSM 对过高学习率的敏感性）；完全去掉层内耦合后 loss 抬升约 0.05，耦合系数过大（2.718）同样变差——**适度耦合最优**。
+> 其余消融：Loop 循环层、h368 更宽隐藏层、Warmup、摘要器 dk、10 万条数据 —— 详见目录。
 
-### 4. v1 1.6B 模型训练总览
+### 2. v1 1.6B 模型训练总览
 
 ![v1 overview](https://x005-0001-0001.github.io/Waver-SNN-SSM/v1/plots/overview.png)
 
 > 1.6B 参数模型在约 17.9M tokens（远低于 Chinchilla 最优）下，Loss 从 ~10 稳定降至 ~5，PPL 从 ~49000 降至 ~200 —— 架构有效性的有力证据。
 
-### 5. v6 低精度 + 训练侧加速验证（RTX 5080 16GB）
+### 3. v6 低精度 + 训练侧加速验证（RTX 5080 16GB）
 
 | 结论 | 数据 |
 |---|---|
@@ -258,7 +262,7 @@ Waver-SNN-SSM/
 ├── v5/          # v5 data-format layer (312005elite / 312505elite)
 ├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
 ├── v7/          # training-step CUDA Graph + 8-bit AdamW (312007elite / 312507elite)
-├── compare/     # curated comparison results (plots + report + dashboard)
+├── compare/     # comparison: round3 figure set + v6 report + dashboards
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
@@ -332,39 +336,43 @@ SwiGLU mixture-of-experts:
 
 ## 📊 Comparison Experiments (with plots)
 
-Curated results and reproduction scripts live in [`compare/`](./compare/).
+All results are **re-parsed from the raw training logs** under `对照测试/`; reproduction scripts and the full figure set live in [`compare/`](./compare/).
+Unified setting: **same vocab / same optimizer / same hyperparameters**, `H=256, L=3, T=2048, batch=1, lr=1e-3`, ~89k steps.
 
-### 1. Waver vs. a classic Transformer (v2 · ~9.5M params · 15.36M tokens)
+### 1. Round-3 controlled comparison: Waver / x25 vs. a classic Transformer
 
-Strictly controlled: same vocab, same optimizer, same hyperparameters; the Transformer (9.48M) has slightly more parameters than Waver (9.29M), making the comparison conservative.
+Three-panel figure (training loss · validation PPL · loss diff vs. baseline):
 
-| Training loss | Validation PPL |
-|---|---|
-| ![Waver vs Transformer loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/ppl.png) |
+![round3 main](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_main.png)
 
-> Waver drops faster throughout training and reaches a lower final loss.
+> Waver v4.2 / x25 reach a slightly **lower** training loss than the Transformer baseline, with validation PPL very close.
 
-### 2. Intra-layer coupling on / off (v2)
+**Multi-seed stability** (5 seeds each: 42 / 43 / 114514 / 1919810 / 31415926):
 
-![Coupling on/off](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test2nocoupling/compare_plots/loss.png)
+![waver seeds](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_seeds_waver.png)
 
-> In the later (overfitting) phase, the model **with coupling enabled** shows a small but consistent advantage.
+![x25 seeds](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_seeds_x25.png)
 
-### 3. v4.1 controlled comparison (same vocab / optimizer / aligned parameter count)
+![transformer seeds](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_seeds_transformer.png)
 
-| Training loss | Validation PPL | Memory usage |
+> Waver's validation PPL is **highly stable** across 5 seeds (31.1–31.6), while the Transformer swings much more (22.3–30.0).
+
+**Ablations & sweeps** (full 14 figures in [`compare/round3/`](./compare/round3/)):
+
+| LR sweep (Waver) | Intra-layer coupling | State dim K=4 |
 |---|---|---|
-| ![v4.1 loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/loss.png) | ![v4.1 ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/ppl.png) | ![v4.1 memory](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/memory.png) |
+| ![lr scan](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_lr_waver.png) | ![coupling](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_coupling.png) | ![k4](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_state_dim_k4.png) |
 
-More curves (log / log-log axes, difference, learning rate, activity) are in [`compare/v4.1/`](./compare/v4.1/).
+> `lr=8e-3` clearly degrades (confirming the complex-valued SSM's sensitivity to too-high LR); removing intra-layer coupling raises loss by ~0.05, and an over-large coupling (2.718) also hurts — **moderate coupling is best**.
+> Other ablations: Loop layers, wider h368, Warmup, summarizer dk, 100k data — see the directory.
 
-### 4. v1 1.6B model — training overview
+### 2. v1 1.6B model — training overview
 
 ![v1 overview](https://x005-0001-0001.github.io/Waver-SNN-SSM/v1/plots/overview.png)
 
 > With only ~17.9M tokens (far below the Chinchilla optimum), the 1.6B model brings loss from ~10 down to ~5 and PPL from ~49000 down to ~200 — strong evidence for the architecture.
 
-### 5. v6 low-precision + training-side speedup validation (RTX 5080 16GB)
+### 3. v6 low-precision + training-side speedup validation (RTX 5080 16GB)
 
 | Finding | Result |
 |---|---|

@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>对比实验 · 直播监控</title>
+<style>
+/* ==========================================================================
+   直播版看板 —— 设计目标（按优先级）
+   1) 画面永不静止：秒级时钟 / 滚动字幕 / 呼吸光晕 / 跳动亮点 / 进度条
+      —— B 站等平台的"挂机检测"看的是画面变化量，这些与数据无关的持续运动是主力
+   2) 一眼可读：大字号、粗曲线、最多 6 条线、自动聚焦轮换
+   3) 不做任何操作也应可看：默认值全部按直播场景调好
+   ========================================================================== */
+:root{
+  --bg:#0a0e14; --panel:#111826; --panel2:#0d1420; --bd:#1e2a3a; --bd2:#26364a;
+  --fg:#e8eef6; --fg2:#93a4b8; --fg3:#5f7183;
+  --accent:#58a6ff; --good:#3fb950; --warn:#f0883e; --bad:#f778ba;
+  --grid:#16202e; --grid2:#121a26;
+  /* 直播用大字号基准 */
+  --fs-base:16px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--fg);
+  font:16px/1.4 "Microsoft YaHei","PingFang SC",system-ui,-apple-system,"Segoe UI",sans-serif;
+  display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  /* 极淡的网格底纹：几乎不可见，但让画面永远有纹理 */
+  background-image:linear-gradient(var(--grid2) 1px,transparent 1px),linear-gradient(90deg,var(--grid2) 1px,transparent 1px);
+  background-size:48px 48px;
+  animation:griddrift 26s linear infinite;
+}
+@keyframes griddrift{from{background-position:0 0}to{background-position:48px 48px}}
+button{font:inherit;font-size:15px;background:var(--panel2);color:var(--fg);
+  border:1px solid var(--bd);border-radius:6px;padding:5px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.on{background:rgba(88,166,255,.16);border-color:var(--accent);color:var(--accent)}
+
+/* ---------------- 顶栏 ---------------- */
+header{
+  display:flex;align-items:center;gap:16px;padding:8px 18px;
+  background:var(--panel);border-bottom:1px solid var(--bd);flex:0 0 auto;
+}
+.live{display:flex;align-items:center;gap:8px;font-weight:700;font-size:18px;letter-spacing:1px;color:#ff5a5a}
+.live i{width:12px;height:12px;border-radius:50%;background:#ff5a5a;display:inline-block;
+  animation:blink 1.6s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(255,90,90,.7)}50%{opacity:.35;box-shadow:0 0 0 9px rgba(255,90,90,0)}}
+.proj{font-size:20px;font-weight:600}
+.clock{
+  font:700 34px/1 ui-monospace,Consolas,"Cascadia Mono",monospace;
+  letter-spacing:2px;color:var(--fg);font-variant-numeric:tabular-nums;
+  text-shadow:0 0 22px rgba(88,166,255,.35);
+}
+.up{font-size:15px;color:var(--fg2)}
+.up b{color:var(--fg);font-variant-numeric:tabular-nums}
+.grow{flex:1}
+.alive{display:flex;align-items:center;gap:8px;font-size:15px;color:var(--fg2)}
+.alive i{width:10px;height:10px;border-radius:50%;background:var(--good);display:inline-block;
+  animation:blink 2.2s ease-in-out infinite}
+
+/* 进度条：当前 epoch 内的完成度，每 2 秒长一点 —— 画面持续变化的来源之一 */
+.prog{height:4px;background:var(--panel2);flex:0 0 auto;position:relative;overflow:hidden}
+.progbar{height:100%;width:0%;background:linear-gradient(90deg,#1f6feb,#58a6ff,#7ee787);
+  transition:width .8s ease;position:relative}
+.progbar::after{content:"";position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);
+  animation:sweep 2.6s linear infinite}
+@keyframes sweep{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+
+/* ---------------- 大数字卡片 ---------------- */
+.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;padding:12px 18px;flex:0 0 auto}
+@media (max-width:1400px){.cards{grid-template-columns:repeat(3,1fr)}}
+.kpi{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:10px 14px;min-width:0}
+.kpi .lb{font-size:14px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .vl{font:700 40px/1.15 ui-monospace,Consolas,"Cascadia Mono",monospace;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .sub{font-size:13px;color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .vl.flash{animation:flashv .9s ease}
+@keyframes flashv{0%{color:#fff;text-shadow:0 0 26px rgba(126,231,135,.95)}100%{color:inherit;text-shadow:none}}
+.kpi.hi{border-color:var(--accent)}
+
+/* ---------------- 主体 ---------------- */
+main{flex:1;display:flex;min-height:0;padding:0 18px 8px;gap:12px}
+.chartwrap{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;
+  background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+.chartwrap h2{margin:0 0 6px;font-size:19px;font-weight:600;display:flex;align-items:center;gap:12px}
+.chartwrap h2 .tag{font-size:14px;font-weight:400;color:var(--fg3)}
+.plotwrap{flex:1;position:relative;min-height:0;display:flex}
+svg.chart{flex:1;width:100%;display:block;min-height:0}
+/* 持续扫过的光带：面积大、周期短，是最容易被"画面变化量"检测到的一块动态 */
+.scan{position:absolute;top:0;bottom:0;width:150px;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(88,166,255,.10),rgba(126,231,135,.05),transparent);
+  animation:scanx 6.5s linear infinite}
+@keyframes scanx{from{left:-150px}to{left:100%}}
+.legend{display:flex;gap:18px;flex-wrap:wrap;padding:6px 2px 0;font-size:15px;color:var(--fg2);flex:0 0 auto}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.legend i{width:18px;height:4px;border-radius:2px;display:inline-block}
+.legend .live{color:var(--good)}
+.legend .live b{animation:blink 1.5s ease-in-out infinite}
+
+/* ---------------- 排行榜 ---------------- */
+.board{width:390px;flex:0 0 390px;background:var(--panel);border:1px solid var(--bd);
+  border-radius:10px;display:flex;flex-direction:column;min-height:0}
+@media (max-width:1200px){.board{display:none}}
+.board h2{margin:0;padding:10px 14px 8px;font-size:19px;font-weight:600;border-bottom:1px solid var(--bd)}
+.board h2 .small{font-size:14px;font-weight:400;color:var(--fg3)}
+#board{overflow:hidden;flex:1;padding:4px 0}
+.row{display:flex;align-items:center;gap:10px;padding:7px 14px;font-size:17px;
+  border-left:4px solid transparent;transition:background .3s,opacity .5s;white-space:nowrap}
+.row .rk{width:34px;color:var(--fg3);font-variant-numeric:tabular-nums;font-size:16px}
+.row .dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto}
+.row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--fg2)}
+.row .pv{font-weight:700;font-variant-numeric:tabular-nums}
+.row.on{background:rgba(88,166,255,.12);border-left-color:var(--accent)}
+/* 运行中的行：一道绿光持续从左扫到右 */
+.row.runrow{position:relative;overflow:hidden}
+.row.runrow::after{content:"";position:absolute;top:0;bottom:0;width:70px;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(63,185,80,.20),transparent);
+  animation:rowscan 3.2s linear infinite}
+@keyframes rowscan{from{left:-70px}to{left:100%}}
+.row.on .nm{color:var(--fg)}
+.row .st{font-size:13px;color:var(--fg3);width:56px;text-align:right}
+.row .st.run{color:var(--good)}
+
+/* ---------------- 底部跑马灯 ---------------- */
+footer{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--bd);padding:7px 0;overflow:hidden}
+.marq{white-space:nowrap;display:inline-block;padding-left:100%;
+  animation:marq 46s linear infinite;font-size:17px;color:var(--fg2)}
+.marq b{color:var(--fg)}
+@keyframes marq{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+.marq .sep{color:var(--fg3);margin:0 22px}
+
+/* ---------------- 运行中曲线的光效 ---------------- */
+@keyframes gl{0%,100%{opacity:.07}50%{opacity:.42}}
+@keyframes dotp{0%,100%{opacity:.5;transform:scale(.82)}50%{opacity:1;transform:scale(1.4)}}
+@keyframes ringp{0%,100%{opacity:.15;r:7}50%{opacity:.75;r:15}}
+.glow{animation:gl 2.4s ease-in-out infinite;filter:blur(3px)}
+.livedot{animation:dotp 1.6s ease-in-out infinite;transform-origin:center;transform-box:fill-box}
+.livring{animation:ringp 2.4s ease-in-out infinite}
+
+#tip{position:fixed;pointer-events:none;z-index:50;display:none;background:#0f1724;
+  border:1px solid var(--bd2);border-radius:8px;padding:8px 11px;font-size:15px;max-width:420px}
+#tip .r{display:flex;gap:14px;justify-content:space-between}
+#tip .hd{color:var(--fg3);margin-bottom:4px;font-size:14px}
+#banner{display:none;padding:7px 18px;background:rgba(240,136,62,.16);color:var(--warn);font-size:15px}
+/* 每次拿到新数据，"数据更新"的时间戳闪一下绿光 */
+#beat.pulse{animation:beatp .9s ease}
+@keyframes beatp{0%{color:#7ee787;text-shadow:0 0 18px rgba(126,231,135,.95)}100%{color:inherit;text-shadow:none}}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="live"><i></i>LIVE</span>
+  <span class="proj">对比实验监控</span>
+  <span class="clock" id="clock">--:--:--</span>
+  <span class="up">已运行 <b id="uptime">—</b></span>
+  <span class="up">数据更新 <b id="beat">等待中</b></span>
+  <span class="grow"></span>
+  <span class="alive"><i></i><span id="status">连接中…</span></span>
+  <button id="btnCycle" class="on" title="每 15 秒把高亮切换到下一条曲线">自动聚焦</button>
+  <button id="btnMetric" title="切换主图指标">Loss</button>
+  <button id="btnScope" title="循环切换：全部运行（默认，正在训练的全部画上）/ 精选 6 条（成绩最好的 6 个）/ 全部（所有实验）">全部运行</button>
+</header>
+<div class="prog"><div class="progbar" id="progbar"></div></div>
+<div id="banner"></div>
+
+<div class="cards" id="cards"></div>
+
+<main>
+  <section class="chartwrap">
+    <h2><span id="h1">训练损失</span><span class="tag" id="h1tag"></span></h2>
+    <div class="plotwrap">
+      <svg class="chart" id="c1"></svg>
+      <div class="scan"></div>
+    </div>
+    <div class="legend" id="lg1"></div>
+  </section>
+  <aside class="board">
+    <h2>排行榜 <span class="small" id="boardMeta"></span></h2>
+    <div id="board"></div>
+  </aside>
+</main>
+
+<footer><div class="marq" id="marq">正在载入…</div></footer>
+<div id="tip"></div>
+
+<script>
+"use strict";
+/* ============================ 常量 / 状态 ============================ */
+const PALETTE = ["#58a6ff","#f0883e","#3fb950","#d2a8ff","#f778ba","#a5d6ff","#ffa657","#7ee787",
+                 "#ff7b72","#79c0ff","#56d364","#e3b341","#bc8cff","#ffa198","#39c5cf","#db61a2"];
+const METRICS = {
+  loss:{name:"训练损失", fmt:v=>v.toFixed(4)},
+  ppl :{name:"困惑度 PPL", fmt:v=>v.toFixed(2)},
+  lr  :{name:"学习率",     fmt:v=>v.toExponential(2)},
+  act :{name:"活动度",     fmt:v=>v.toFixed(4)},
+  rss :{name:"主机内存(MB)",fmt:v=>v.toFixed(0)},
+  val_ppl:{name:"验证困惑度", fmt:v=>v.toFixed(2), epochLevel:true},
+};
+const METRIC_ORDER = ["loss","ppl","lr","act","val_ppl"];
+
+const S = {
+  runs:{}, order:[], colorIdx:{},
+  sel:new Set(),
+  /* 视图范围（决定画哪些 run）：
+       running = **全部正在跑的**（默认；一个都没在跑时自动退回 best6）
+       best6   = 成绩最好的 6 条
+       all     = 全部有数据的 run */
+  scope:"running",
+  focus:null, focusIdx:0,
+  /* ⚠️ 必须在这里初始化！之前漏了这一行，S.autoCycle 是 undefined，
+     于是 `if(!S.autoCycle) return;` 每次都直接返回 —— 自动聚焦从来没工作过，
+     要手动点一下按钮（!undefined → true）才开始轮换。 */
+  autoCycle:true,
+  metric:"loss",
+  smoothWin:400, smooth:0,
+  logY:true,
+  version:-1,
+  series:{}, seriesKey:"", _seq:0,
+  view:{c1:null},
+  live:true,
+  firstDataAt:null,
+  tickCount:0,         // 诊断：成功刷新次数
+  lastDataAt:0,        // 诊断：最后一次拿到数据的时间
+};
+const $ = s => document.querySelector(s);
+const NS  = "http://www.w3.org/2000/svg";
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const fmtI = v => (v==null||Number.isNaN(v)) ? "—" : Math.round(v).toLocaleString("en-US");
+const fmtT = s => (s==null||!isFinite(s)) ? "—" :
+  (s<60 ? Math.round(s)+"秒" : s<3600 ? (s/60).toFixed(1)+"分" : (s/3600).toFixed(1)+"小时");
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const colorOf = n => (S.colorIdx[n]==null) ? "#8b949e" : PALETTE[S.colorIdx[n] % PALETTE.length];
+/* 目录名很长、且公共前缀完全一样（第3轮v4.2waverbat12048loop0seed42…），
+   必须"截头留尾"才能真正区分 —— coup0.368 / seed114514 / lr0.002 都只在尾部不同 */
+const shortName = (n, max=30) => (n && n.length>max) ? "…"+n.slice(-(max-1)) : (n||"");
+/* 卡片显示的取"最近若干个平滑点"的均值：
+   训练日志是**每个 step 一条**、batch=1，单步 loss 噪声极大
+   （实测见过某一 run 的末步 loss=0.10），直接显示会疯狂跳动。
+
+   ⚠️ 这个函数**只返回 loss**。PPL 一律用 exp(loss) 换算。
+   之前写成 smoothLast(n,"ppl") 去取 series 的均值，而 series 是**当前指标**的序列，
+   于是当指标是 loss 时，PPL 卡片实际显示的是 loss 值
+   （截图里「损失 3.3955 / 困惑度 3.40」，而 e^3.3955 = 29.8，明显矛盾）。 */
+function smoothLoss(n){
+  if(!n) return null;
+  if(S.metric==="loss" && S.series[n] && S.series[n].y){
+    const ys = S.series[n].y.filter(v => isFinite(v));
+    if(ys.length){
+      const k = Math.min(12, ys.length);
+      return ys.slice(-k).reduce((a,b)=>a+b,0)/k;
+    }
+  }
+  const r = S.runs[n];
+  return r ? r.last_loss : null;
+}
+
+/* ============================ 反挂机：时钟 / 跑马灯 ============================ */
+function tickClock(){
+  const d = new Date();
+  const p = n => String(n).padStart(2,"0");
+  $("#clock").textContent = p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds());
+  const t = S.firstDataAt || window.__bootTs;
+  const sec = (Date.now()-t)/1000;
+  $("#uptime").textContent = sec<60 ? Math.round(sec)+" 秒"
+    : sec<3600 ? Math.floor(sec/60)+" 分 "+(Math.floor(sec)%60)+" 秒"
+    : Math.floor(sec/3600)+" 时 "+Math.floor(sec/60)%60+" 分";
+}
+window.__bootTs = Date.now();
+setInterval(tickClock, 1000); tickClock();
+
+/* ============================ 图表引擎（大字号 / 粗线 / 聚焦） ============================ */
+function niceTicks(lo,hi,want){
+  if(!isFinite(lo)||!isFinite(hi)||lo===hi) return [lo];
+  const span=hi-lo, raw=span/Math.max(1,want);
+  const mag=Math.pow(10,Math.floor(Math.log10(raw))), nz=raw/mag;
+  const step=(nz<=1?1:nz<=2?2:nz<=2.5?2.5:nz<=5?5:10)*mag;
+  const out=[]; let t=Math.ceil(lo/step)*step;
+  for(;t<=hi+step*1e-9&&out.length<40;t+=step) out.push(Math.abs(t)<step*1e-9?0:t);
+  return out;
+}
+function logTicks(lo,hi){
+  const out=[];
+  for(let e=Math.floor(Math.log10(lo));e<=Math.ceil(Math.log10(hi));e++)
+    for(const m of [1,2,5]){ const v=m*Math.pow(10,e); if(v>=lo&&v<=hi) out.push(v); }
+  return out.length?out:[lo,hi];
+}
+
+const FS = {axis:17, mark:14, title:20};   // 直播用大字号
+
+/* 安全移除悬停十字线。
+   ⚠️ 不能直接 svg.removeChild(svg._cross)：makeChart 重绘时会把 SVG 子节点全部清空，
+   十字线已经不在树里，但变量还指着它 —— 直接 removeChild 会抛
+   "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node."
+   （之前就是这么炸的：鼠标划过图表 → 2 秒后重绘清掉十字线 → 再动鼠标就报错） */
+function dropCross(svg){
+  if(svg._cross && svg._cross.parentNode === svg) svg.removeChild(svg._cross);
+  svg._cross = null;
+}
+
+function makeChart(svg, opts){
+  const W = svg.clientWidth || 1000, H = svg.clientHeight || 460;
+  const M = {l:86, r:22, t:16, b:40};
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  svg._cross = null;        // 十字线刚被一起清掉了，引用作废（见 dropCross 的说明）
+  const el=(t,a={})=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
+
+  const ser = opts.series.filter(s=>s.x.length && s.y.some(v=>isFinite(v)));
+  if(!ser.length){
+    svg._geo=null;
+    const t=el("text",{x:W/2,y:H/2,fill:"var(--fg3)","text-anchor":"middle","font-size":"20"});
+    t.textContent="等待数据…"; svg.appendChild(t); return;
+  }
+  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+  for(const s of ser) for(let i=0;i<s.x.length;i++){
+    const X=s.x[i],Y=s.y[i];
+    if(!isFinite(X)||!isFinite(Y)) continue;
+    if(X<x0)x0=X; if(X>x1)x1=X; if(Y<y0)y0=Y; if(Y>y1)y1=Y;
+  }
+  if(!isFinite(x0)||!isFinite(y0)){svg._geo=null;return;}
+  const v=S.view[opts.viewKey];
+  let vx0=v?v.x0:x0, vx1=v?v.x1:x1;
+  if(vx1<=vx0){vx0=x0;vx1=x1||x0+1;}
+  const px = X => M.l + (X-vx0)/(vx1-vx0||1)*(W-M.l-M.r);
+  const useLog = opts.logY && y0>0;
+  const ly0=useLog?Math.log10(y0):y0, ly1=useLog?Math.log10(y1):y1;
+  const pad = useLog?0:(ly1-ly0)*0.06||0.5;
+  const Y0=ly0-pad, Y1=ly1+pad;
+  const py  = Y => M.t + (1-(Y-Y0)/((Y1-Y0)||1))*(H-M.t-M.b);
+  const pyv = Y => py(useLog?Math.log10(Math.max(Y,1e-12)):Y);
+
+  for(const t of (useLog?logTicks(y0,y1):niceTicks(Y0,Y1,5))){
+    const Y=pyv(t); if(Y<M.t-1||Y>H-M.b+1) continue;
+    svg.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y,y2:Y,stroke:"var(--grid)"}));
+    const tx=el("text",{x:M.l-10,y:Y+6,fill:"var(--fg3)","text-anchor":"end","font-size":FS.axis});
+    tx.textContent = Math.abs(t)>=1e5||(Math.abs(t)<1e-3&&t!==0)?t.toExponential(1):(+t.toFixed(6)).toString();
+    svg.appendChild(tx);
+  }
+  for(const t of niceTicks(vx0,vx1,8)){
+    const X=px(t); if(X<M.l-1||X>W-M.r+1) continue;
+    svg.appendChild(el("line",{x1:X,x2:X,y1:M.t,y2:H-M.b,stroke:"var(--grid2)"}));
+    const tx=el("text",{x:X,y:H-M.b+24,fill:"var(--fg3)","text-anchor":"middle","font-size":FS.axis});
+    tx.textContent = Math.abs(t)>=1e5?t.toExponential(1)
+      : (Math.abs(t)>=1000?Math.round(t).toLocaleString("en-US"):(+t.toFixed(3)).toString());
+    svg.appendChild(tx);
+  }
+  for(const mk of (opts.marks||[])){
+    const X=px(mk[0]); if(X<M.l||X>W-M.r) continue;
+    svg.appendChild(el("line",{x1:X,x2:X,y1:M.t,y2:H-M.b,stroke:"var(--bd2)","stroke-dasharray":"3 5"}));
+    const tx=el("text",{x:X+5,y:M.t+16,fill:"var(--fg3)","font-size":FS.mark});
+    tx.textContent="E"+mk[1]; svg.appendChild(tx);
+  }
+  svg.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:H-M.b,y2:H-M.b,stroke:"var(--bd)"}));
+  svg.appendChild(el("line",{x1:M.l,x2:M.l,y1:M.t,y2:H-M.b,stroke:"var(--bd)"}));
+
+  /* ---- 曲线：聚焦的那条最粗最亮，其余压暗 ---- */
+  const lastPt={};
+  const anyFocus = S.focus && ser.some(s=>s.name===S.focus);
+  for(const s of ser){
+    const isFocus = anyFocus ? (s.name===S.focus) : true;
+    const isRun   = !!(S.runs[s.name] && S.runs[s.name].status==="running");
+    const dim = anyFocus && !isFocus;
+    let d="",pen=false,li=-1;
+    for(let i=0;i<s.x.length;i++){
+      const X=s.x[i],Y=s.y[i];
+      if(!isFinite(X)||!isFinite(Y)||X<vx0||X>vx1){pen=false;continue;}
+      d += (pen?"L":"M")+px(X).toFixed(1)+" "+pyv(Y).toFixed(1)+" "; pen=true; li=i;
+    }
+    if(!d) continue;
+    /* 运行中：先铺一层同色光晕（呼吸），再压清晰主线 */
+    if(isRun && !dim){
+      svg.appendChild(el("path",{d,fill:"none",stroke:s.color,"stroke-width":"10",
+        "stroke-linecap":"round","stroke-linejoin":"round",class:"glow"}));
+    }
+    svg.appendChild(el("path",{d,fill:"none",stroke:s.color,
+      "stroke-width": dim ? "2.4" : (isRun ? "4" : "3.2"),
+      "stroke-linejoin":"round","stroke-linecap":"round",
+      opacity: dim ? ".24" : "1"}));
+    if(isRun && li>=0 && !dim) lastPt[s.name]={x:px(s.x[li]),y:pyv(s.y[li]),c:s.color};
+  }
+  /* 运行中曲线的末端：跳动亮点 + 扩散光环 */
+  for(const k in lastPt){
+    const p=lastPt[k];
+    svg.appendChild(el("circle",{cx:p.x,cy:p.y,r:8,fill:p.c,class:"glow ludot"}));
+    svg.appendChild(el("circle",{cx:p.x,cy:p.y,r:10,fill:"none",stroke:p.c,"stroke-width":"2",class:"livring"}));
+    svg.appendChild(el("circle",{cx:p.x,cy:p.y,r:5.5,fill:p.c,class:"livedot"}));
+  }
+  svg._geo={W,H,M,vx0,vx1,y0,y1,useLog,px,pyv,ser};
+
+  if(!svg._bound){
+    svg._bound=true;
+    const tip=$("#tip");
+    svg.addEventListener("mousemove",ev=>{
+      const g=svg._geo; if(!g) return;
+      const r=svg.getBoundingClientRect();
+      const sx=(ev.clientX-r.left)*(g.W/r.width);
+      const X=g.vx0+(sx-g.M.l)/(g.W-g.M.l-g.M.r)*(g.vx1-g.vx0);
+      const rows=[]; let bx=null;
+      for(const s of g.ser){
+        let bi=-1,bd=Infinity;
+        for(let i=0;i<s.x.length;i++){const d=Math.abs(s.x[i]-X); if(d<bd){bd=d;bi=i;}}
+        if(bi>=0&&bd<(g.vx1-g.vx0)*0.05){rows.push({name:s.name,color:s.color,x:s.x[bi],y:s.y[bi]});bx=s.x[bi];}
+      }
+      if(!rows.length){tip.style.display="none";return;}
+      rows.sort((a,b)=>a.y-b.y);
+      const cx=g.px(bx);
+      tip.innerHTML=`<div class="hd">x = ${(+bx.toFixed(3))}</div>`+
+        rows.map(r=>`<div class="r"><span style="color:${r.color}">■ ${esc(r.name)}</span><b>${r.y.toFixed(4)}</b></div>`).join("");
+      tip.style.display="block";
+      tip.style.left=Math.min(window.innerWidth-tip.offsetWidth-10,Math.max(6,ev.clientX+16))+"px";
+      tip.style.top =Math.min(window.innerHeight-tip.offsetHeight-10,Math.max(6,ev.clientY-tip.offsetHeight-14))+"px";
+      dropCross(svg);
+      svg._cross=el("line",{x1:cx,x2:cx,y1:g.M.t,y2:g.H-g.M.b,stroke:"var(--accent)","stroke-dasharray":"4 4",opacity:".85"});
+      svg.appendChild(svg._cross);
+    });
+    svg.addEventListener("mouseleave",()=>{tip.style.display="none"; dropCross(svg);});
+    svg.addEventListener("wheel",ev=>{
+      ev.preventDefault();
+      const g=svg._geo; if(!g) return;
+      const r=svg.getBoundingClientRect();
+      const X=g.vx0+((ev.clientX-r.left)/r.width)*(g.vx1-g.vx0);
+      const k=ev.deltaY>0?1.2:1/1.2;
+      let a=X-(X-g.vx0)*k,b=X+(g.vx1-X)*k;
+      const span=g.vx1-g.vx0;
+      if(b-a>(x1-x0)*1.001||b-a<span*0.02) return;
+      S.view[opts.viewKey]={x0:a,x1:b}; redraw();
+    },{passive:false});
+    svg.addEventListener("dblclick",()=>{S.view[opts.viewKey]=null;redraw();});
+  }
+}
+
+/* ============================ 取数 ============================ */
+async function getJSON(u){
+  const r=await fetch(u,{cache:"no-store"});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+
+/* 有数据的 run，按"最优验证 PPL"从好到差排序 */
+function byBest(list){
+  return list.filter(n=>S.runs[n] && (S.runs[n].points||0)>0)
+    .sort((a,b)=>{
+      const x=S.runs[a].best_val_ppl, y=S.runs[b].best_val_ppl;
+      if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1;
+      return x-y;
+    });
+}
+/* 正在跑的 run（且已经有数据） */
+function runningRuns(){
+  return S.order.filter(n=>S.runs[n] && S.runs[n].status==="running" && (S.runs[n].points||0)>0);
+}
+/* 按当前 scope 决定画哪些 run —— 这是唯一的选择入口 */
+function pickSel(){
+  if(S.scope==="all")   return byBest(S.order);
+  if(S.scope==="best6") return byBest(S.order).slice(0,6);
+  // running（默认）：全部正在跑的都画上，不设上限；一个都没有时退回成绩最好的 6 条
+  const run = runningRuns();
+  return run.length ? run : byBest(S.order).slice(0,6);
+}
+const SCOPES = ["running","best6","all"];
+const SCOPE_LABEL = {running:"全部运行", best6:"精选 6 条", all:"全部"};
+const scopeText = () => SCOPE_LABEL[S.scope] + (S.sel.size ? " " + S.sel.size : "");
+
+async function refreshRuns(){
+  try{
+    const j = await getJSON("/api/runs");
+    S.runs={}; S.order=[];
+    for(const r of j.runs){ if(r.name){ S.runs[r.name]=r; S.order.push(r.name); } }
+    S.colorIdx={}; S.order.forEach((n,i)=>{ S.colorIdx[n]=i; });
+    // 最优 / 排名
+    S.bestOf={}; let mn=null; let runningN=0;
+    for(const n of S.order){
+      const b=S.runs[n].best_val_ppl;
+      S.bestOf[n]=b; if(b!=null&&(mn==null||b<mn)) mn=b;
+      if(S.runs[n].status==="running") runningN++;
+    }
+    S.minBest=mn; S.runningN=runningN;
+    // 每次刷新都按当前 scope 重算要画的 run
+    //（"全部运行"模式下，新启动的训练会自动加进来，不需要手动操作）
+    const want = pickSel();
+    const same = want.length===S.sel.size && want.every(n=>S.sel.has(n));
+    if(!same){
+      S.sel = new Set(want);
+      S.seriesKey = "";                    // 选择变了必须重取曲线
+      S.focusIdx = 0;
+      if(S.focus && !S.sel.has(S.focus)) S.focus = null;
+    }
+    if(S.focus && !S.runs[S.focus]) S.focus = null;
+    S.version = j.version;
+    S.tickCount++;
+    S.lastDataAt = Date.now();
+    renderBoard(); renderStatus(); renderKPI(); renderScopeBtn(); renderBeat();
+    const tot = S.order.reduce((a,n)=>a+(S.runs[n].points||0),0);
+    S.allPoints = tot;
+    return true;
+  }catch(e){ banner("取 run 列表失败: "+e.message); return false; }
+}
+
+async function refreshSeries(){
+  const sel=[...S.sel];
+  if(!sel.length){ S.series={}; S.seriesKey=""; redraw(); return; }
+  // 缓存键必须带版本号，否则永远停在第一份数据（原版踩过的坑）
+  const key=[sel.join(","),S.metric,S.smooth,S.version].join("|");
+  if(key===S.seriesKey){
+    // 数据没变就别重绘：重绘会清空 SVG，把悬停十字线一并清掉（观感是每 2 秒闪一下），
+    // 而且白费一次布局。只要把卡片按现有平滑数据刷一遍即可。
+    renderKPI(); return;
+  }
+  const my=++S._seq;
+  const url=`/api/series?runs=${encodeURIComponent(sel.join(","))}&metric=${S.metric}`
+          + `&smooth=${S.smooth}&xaxis=seq&points=1600`;
+  try{
+    const j = await getJSON(url);
+    if(my!==S._seq) return;
+    S.series = j.series||{};
+    S.seriesKey = key;
+    if(!S.firstDataAt) S.firstDataAt = Date.now();
+    redraw();
+  }catch(e){ banner("取曲线失败: "+e.message); }
+}
+
+/* ============================ 绘制 ============================ */
+function redraw(){
+  const sel=[...S.sel], data=S.series;
+  const ser=[];
+  let marks=[];
+  for(const n of sel) if(data[n]) ser.push({name:n,color:colorOf(n),x:data[n].x,y:data[n].y});
+  for(const n of sel) if(data[n]&&data[n].marks&&data[n].marks.length){marks=data[n].marks;break;}
+  const m=METRICS[S.metric]||{name:S.metric};
+  makeChart($("#c1"),{series:ser,marks,logY:S.logY,viewKey:"c1"});
+  $("#h1").textContent = m.name;
+  const smoothTag = S.smoothWin>1 ? `平滑 ≈${S.smoothWin} 步` : "不平滑";
+  $("#h1tag").textContent = `横轴=记录序号 · ${smoothTag} · ${ser.length} 条曲线`
+     + (S.focus? ` · 聚焦 ${shortName(S.focus,26)}` : "");
+  renderLegend(ser);
+  renderKPI();          // series 是平滑后的，卡片要跟着它更新才不会显示单步噪声
+}
+
+function renderLegend(ser){
+  const html = ser.map(s=>{
+    const run = S.runs[s.name]&&S.runs[s.name].status==="running";
+    const on  = S.focus===s.name;
+    return `<span class="${run?"live":""}" data-n="${esc(s.name)}" style="opacity:${S.focus?(on?1:.42):1}">`
+      + `<i style="background:${s.color}"></i>${run?"<b>●</b>":""}${esc(shortName(s.name))}</span>`;
+  }).join("");
+  // 同样：内容没变就别重建，否则图例里那个闪烁的绿点会一直从头开始闪
+  const el = $("#lg1");
+  if(el.dataset.h !== html){ el.dataset.h = html; el.innerHTML = html; }
+}
+
+/* ============================ 侧栏排行榜 ============================ */
+function renderBoard(){
+  const rows = S.order.map(n=>({n, r:S.runs[n]}))
+    .sort((a,b)=>{
+      const x=a.r.best_val_ppl, y=b.r.best_val_ppl;
+      if(x==null&&y==null) return a.n.localeCompare(b.n);
+      if(x==null) return 1; if(y==null) return -1; return x-y;
+    });
+  const shown = rows.slice(0, 12);
+  const html = shown.map((it,i)=>{
+    const on = S.focus===it.n;
+    const run = it.r.status==="running";
+    const pv = it.r.best_val_ppl;
+    const isBest = pv!=null && Math.abs(pv-S.minBest)<1e-9;
+    return `<div class="row ${on?"on":""} ${run?"runrow":""}">
+      <span class="rk">${i+1}</span>
+      <span class="dot" style="background:${colorOf(it.n)}"></span>
+      <span class="nm" title="${esc(it.n)}">${esc(shortName(it.n,30))}</span>
+      <span class="pv" style="${isBest?"color:var(--accent)":""}">${pv==null?"—":pv.toFixed(2)}</span>
+      <span class="st ${run?"run":""}">${run?"运行中":"已停"}</span>
+    </div>`;      // 运行中的行带 runrow 类 → CSS 给它加一道持续扫过的绿光
+  }).join("") + (rows.length>12 ? `<div class="row"><span class="nm" style="color:var(--fg3)">… 其余 ${rows.length-12} 个</span></div>` : "");
+  // 内容没变就别重建 DOM，否则运行中那行的流光动画会被反复打断
+  const bel = $("#board");
+  if(bel.dataset.h !== html){ bel.dataset.h = html; bel.innerHTML = html; }
+  $("#boardMeta").textContent = `${S.order.length} 个实验`;
+}
+
+/* ============================ 顶部大数字 ============================ */
+function kpiHTML(list){
+  return list.map(k=>`<div class="kpi${k.hi?" hi":""}">
+    <div class="lb">${k.lb}</div>
+    <div class="vl" id="kpi-${k.id}">${k.v}</div>
+    <div class="sub">${k.sub||"&nbsp;"}</div>
+  </div>`).join("");
+}
+function setKPI(id, text){
+  const e=document.getElementById("kpi-"+id);
+  if(!e) return;
+  if(e.textContent!==text){ e.textContent=text; e.classList.remove("flash"); void e.offsetWidth; e.classList.add("flash"); }
+}
+function renderKPI(){
+  // 以"当前聚焦 / 运行中 / 最优"的 run 作为主视角，取不到就退化
+  const names = S.order.filter(n=>S.runs[n]);
+  const running = names.filter(n=>S.runs[n].status==="running");
+  const main = (S.focus&&S.runs[S.focus]) ? S.focus
+             : running[0] || names.filter(n=>S.runs[n].best_val_ppl!=null)
+                 .sort((a,b)=>S.runs[a].best_val_ppl-S.runs[b].best_val_ppl)[0] || names[0];
+  const r = main ? S.runs[main] : null;
+  const sLoss = smoothLoss(main);                       // 始终是 loss
+  const sPpl  = (sLoss!=null) ? Math.exp(sLoss) : null;  // PPL 由 loss 换算，保证两者自洽
+  const spd = running.length ? Math.max(...running.map(n=>S.runs[n].speed||0)) || null : null;
+  const eta = running.length ? Math.min(...running.map(n=>S.runs[n].eta==null?Infinity:S.runs[n].eta)) : null;
+  const etaV = (eta!=null && isFinite(eta)) ? fmtT(eta) : "—";
+
+  const list = [
+    {id:"ep",  lb:"当前轮次", hi:true,
+     v: r&&r.cur_epoch ? `${r.cur_epoch}<span style="font-size:26px;color:var(--fg3)"> / ${r.epochs_total||"?"}</span>` : "—",
+     sub: r? esc(shortName(r.name,34)) : "无数据"},
+    {id:"loss",lb:"当前损失（平滑）",
+     v: sLoss!=null ? sLoss.toFixed(4) : "—",
+     sub: r&&r.cur_step ? `step ${fmtI(r.cur_step)}` : ""},
+    {id:"ppl", lb:"当前困惑度",
+     v: sPpl!=null ? sPpl.toFixed(2) : "—", sub:"越低越好"},
+    {id:"best",lb:"最优验证 PPL",
+     v: S.minBest!=null ? S.minBest.toFixed(2) : "—",
+     sub: (()=>{ const n=S.order.find(x=>S.bestOf&&Math.abs(S.bestOf[x]-S.minBest)<1e-9);
+                 return n? esc(shortName(n,34)) : ""; })()},
+    {id:"spd", lb:"训练速度",
+     v: spd!=null ? spd.toFixed(1) : "—",
+     sub: "记录 / 秒"},
+    {id:"eta", lb:"预计剩余",
+     v: etaV, sub: running.length ? running.length+" 个任务在跑" : "无运行中任务"},
+  ];
+  /* 增量更新：只改文本、不重建 DOM —— 数字一变就闪一下绿光；
+     而整体重建会打断正在播放的动画（之前那样每 2 秒重建一次，等于没有动效）。 */
+  const box = $("#cards");
+  let built = box.children.length === list.length;
+  if(built) for(const k of list) if(!document.getElementById("kpi-"+k.id)){ built = false; break; }
+  if(!built){
+    box.innerHTML = kpiHTML(list);
+  }else{
+    for(const k of list){
+      const card = document.getElementById("kpi-"+k.id).parentElement;
+      const vl = card.querySelector(".vl");
+      if(vl.innerHTML !== k.v){
+        vl.innerHTML = k.v;
+        vl.classList.remove("flash"); void vl.offsetWidth; vl.classList.add("flash");
+      }
+      const sb = card.querySelector(".sub");
+      const sbt = k.sub || "&nbsp;";
+      if(sb.innerHTML !== sbt) sb.innerHTML = sbt;
+      card.classList.toggle("hi", !!k.hi);
+    }
+  }
+  // 进度条：当前 epoch 内完成度
+  let pct=0;
+  if(r && r.cur_step && r.steps_per_epoch) pct = clamp(r.cur_step/r.steps_per_epoch*100, 0, 100);
+  else if(r && r.cur_epoch && r.epochs_total) pct = clamp((r.cur_epoch-1)/r.epochs_total*100,0,100);
+  $("#progbar").style.width = pct.toFixed(1)+"%";
+}
+
+/* ============================ 底部跑马灯 ============================ */
+function renderMarquee(){
+  const parts=[];
+  const running = S.order.filter(n=>S.runs[n]&&S.runs[n].status==="running");
+  if(running.length){
+    for(const n of running.slice(0,6)){
+      const r=S.runs[n];
+      parts.push(`<b>▸ ${esc(shortName(n,34))}</b> 第 ${r.cur_epoch||"?"}/${r.epochs_total||"?"} 轮 · `
+        +`step ${fmtI(r.cur_step)} · loss <b>${r.last_loss!=null?r.last_loss.toFixed(4):"—"}</b> · `
+        +`最优 <b>${r.best_val_ppl!=null?r.best_val_ppl.toFixed(2):"—"}</b>`
+        +(r.speed?` · ${r.speed.toFixed(1)} 记录/秒`:"")
+        +(r.eta!=null&&isFinite(r.eta)?` · 剩余约 ${fmtT(r.eta)}`:""));
+    }
+  } else {
+    parts.push(`<b>当前没有正在训练的进程</b> —— 以下是已完成实验的最好成绩`);
+    const top = S.order.filter(n=>S.runs[n]&&S.runs[n].best_val_ppl!=null)
+      .sort((a,b)=>S.runs[a].best_val_ppl-S.runs[b].best_val_ppl).slice(0,5);
+    for(const n of top) parts.push(`${esc(shortName(n,34))} <b>${S.runs[n].best_val_ppl.toFixed(2)}</b>`);
+  }
+  const sep = `<span class="sep">◆</span>`;
+  const html = parts.join(sep) + sep
+    + `共 <b>${S.order.length}</b> 个实验 · 累计 <b>${fmtI(S.allPoints||0)}</b> 条训练记录` + sep;
+  // 内容没变就别碰 DOM —— 重建 innerHTML 会把跑马灯的滚动动画打回起点
+  const el = $("#marq");
+  if(el.dataset.h !== html){ el.dataset.h = html; el.innerHTML = html; }
+}
+
+/* ============================ 状态 ============================ */
+function renderStatus(){
+  const n = S.runningN||0;
+  $("#status").textContent = n ? `${n} 个任务在训练 · ${S.order.length} 个实验`
+                               : `空闲 · ${S.order.length} 个实验`;
+}
+function renderScopeBtn(){ $("#btnScope").textContent = scopeText(); }
+/* 实时更新指示器：每次成功拿到数据就刷新时间。
+   若这里的秒数停住不动，说明前端刷新链路断了（banner 会同时给出原因）。 */
+function renderBeat(){
+  const e = $("#beat");
+  if(!e) return;
+  const t = S.lastDataAt ? new Date(S.lastDataAt).toLocaleTimeString() : "等待中";
+  if(e.textContent !== t){
+    e.textContent = t;
+    e.classList.remove("pulse"); void e.offsetWidth; e.classList.add("pulse");
+  }
+}
+function banner(msg){
+  const b=$("#banner"); b.textContent=msg; b.style.display="block";
+  clearTimeout(b._t); b._t=setTimeout(()=>b.style.display="none",6000);
+}
+
+/* ============================ 自动轮换（反挂机主力） ============================ */
+/* 每 15 秒把高亮切到下一条曲线：画面有变化，观众注意力也被带着走 */
+function rotateFocus(){
+  if(!S.autoCycle) return;
+  const sel=S.sel.size ? [...S.sel] : S.order;
+  if(!sel.length) return;
+  S.focusIdx = (S.focusIdx+1) % sel.length;
+  S.focus = sel[S.focusIdx];
+  renderKPI(); renderMarquee(); redraw(); renderBoard();
+}
+setInterval(rotateFocus, 15000);
+
+/* 状态每 5 秒刷；跑马灯降到 30 秒 —— 它含高频变化的数字，刷太勤会不停重建
+   innerHTML，把滚动动画打回起点（观感就是"抖一下"而不是流畅滚动）。 */
+setInterval(()=>{ renderStatus(); }, 5000);
+setInterval(()=>{ renderMarquee(); }, 30000);
+
+/* ============================ 实时 ============================ */
+let _tick=false;
+async function tick(){
+  if(_tick) return; _tick=true;
+  try{ await refreshRuns(); await refreshSeries(); }
+  finally{ _tick=false; }
+}
+function startSSE(){
+  try{
+    const es=new EventSource("/api/events");
+    es.onopen =()=>{ $("#status").classList.add("live"); };
+    es.onerror=()=>{};
+    es.onmessage=ev=>{
+      if(!S.live) return;
+      const now=Date.now();
+      if(S._lastEv && now-S._lastEv<1200) return;   // 节流：最多约 1 秒一次
+      S._lastEv=now;
+      tick();
+    };
+  }catch(e){}
+}
+
+/* ============================ 交互 ============================ */
+$("#btnCycle").onclick = ()=>{ S.autoCycle=!S.autoCycle; $("#btnCycle").classList.toggle("on",S.autoCycle); };
+$("#btnMetric").onclick = ()=>{
+  const i=METRIC_ORDER.indexOf(S.metric);
+  S.metric=METRIC_ORDER[(i+1)%METRIC_ORDER.length];
+  $("#btnMetric").textContent = (METRICS[S.metric]||{}).name || S.metric;
+  S.seriesKey=""; refreshSeries();
+};
+/* 视图范围按钮：循环切换 全部运行 → 精选 6 条 → 全部 */
+$("#btnScope").onclick = ()=>{
+  const i = SCOPES.indexOf(S.scope);
+  S.scope = SCOPES[(i+1) % SCOPES.length];
+  S.focusIdx = 0; S.focus = null;
+  S.sel = new Set(pickSel());
+  S.seriesKey = "";
+  renderScopeBtn(); renderBoard(); refreshSeries();
+};
+let _rt=null;
+window.addEventListener("resize", ()=>{ clearTimeout(_rt); _rt=setTimeout(()=>redraw(),160); });
+
+/* 点击图例：把聚焦切到那条 */
+$("#lg1").addEventListener("click", ev=>{
+  const sp=ev.target.closest("span"); if(!sp) return;
+  const n=sp.getAttribute("data-n");
+  S.focus = (S.focus===n) ? null : n;
+  S.autoCycle=false; $("#btnCycle").classList.remove("on");
+  renderKPI(); renderMarquee(); redraw(); renderBoard();
+});
+
+/* ============================ 全局错误兜底 ============================ */
+/* 任何未捕获的 JS 错误 / Promise 失败都弹到顶部横幅 —— 直播时最怕"悄悄停更"，
+   有了它至少能一眼看出是不是前端挂了。 */
+window.addEventListener("error", ev => banner("页面错误：" + (ev.message || ev)));
+window.addEventListener("unhandledrejection", ev =>
+  banner("请求异常：" + ((ev.reason && ev.reason.message) || ev.reason)));
+
+/* ============================ 启动 ============================ */
+(async function(){
+  $("#btnMetric").textContent = (METRICS[S.metric]||{}).name;
+  renderScopeBtn();
+  // 平滑：等效窗口 400 步（直播看趋势，不要毛刺）
+  S.smoothWin=400; S.smooth=1-1/400;
+  await refreshRuns();
+  await refreshSeries();
+  renderMarquee();
+  startSSE();
+  setInterval(()=>{ if(S.live) tick(); }, 2000);   // 兜底轮询：保证最低刷新频率（SSE 是主通道）
+})();
+</script>
+</body>
+</html>
