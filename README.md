@@ -141,13 +141,13 @@ SwiGLU 混合专家：
 
 | 训练损失 | 验证 PPL |
 |---|---|
-| ![Waver vs Transformer loss](./v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](./v2/compare/test1/result/ppl.png) |
+| ![Waver vs Transformer loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/ppl.png) |
 
 > Waver 全训练流程损失下降更快、最终收敛值更低。
 
 ### 2. 层内耦合（Intra-layer Coupling）开 / 关对照（v2）
 
-![Coupling on/off](./v2/compare/test2nocoupling/compare_plots/loss.png)
+![Coupling on/off](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test2nocoupling/compare_plots/loss.png)
 
 > 训练后期（过拟合阶段）**启用耦合**的模型展现微弱但稳定的优势。
 
@@ -155,13 +155,13 @@ SwiGLU 混合专家：
 
 | 训练损失 | 验证 PPL | 显存占用 |
 |---|---|---|
-| ![v4.1 loss](./compare/v4.1/loss.png) | ![v4.1 ppl](./compare/v4.1/ppl.png) | ![v4.1 memory](./compare/v4.1/memory.png) |
+| ![v4.1 loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/loss.png) | ![v4.1 ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/ppl.png) | ![v4.1 memory](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/memory.png) |
 
 更多曲线（对数轴 / 双对数轴 / 差值 / 学习率 / 激活）见 [`compare/v4.1/`](./compare/v4.1/)。
 
 ### 4. v1 1.6B 模型训练总览
 
-![v1 overview](./v1/plots/overview.png)
+![v1 overview](https://x005-0001-0001.github.io/Waver-SNN-SSM/v1/plots/overview.png)
 
 > 1.6B 参数模型在约 17.9M tokens（远低于 Chinchilla 最优）下，Loss 从 ~10 稳定降至 ~5，PPL 从 ~49000 降至 ~200 —— 架构有效性的有力证据。
 
@@ -181,7 +181,7 @@ SwiGLU 混合专家：
 每个版本目录下的 `.py` 即为完整程序，直接运行进入菜单：
 
 ```bash
-python v5/312005elite.py
+python v7/312007elite.py
 ```
 
 所有关键参数（模型结构、优化器、数据路径、MoE、显存优化等）均在文件头部集中定义。
@@ -340,13 +340,13 @@ Strictly controlled: same vocab, same optimizer, same hyperparameters; the Trans
 
 | Training loss | Validation PPL |
 |---|---|
-| ![Waver vs Transformer loss](./v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](./v2/compare/test1/result/ppl.png) |
+| ![Waver vs Transformer loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test1/result/ppl.png) |
 
 > Waver drops faster throughout training and reaches a lower final loss.
 
 ### 2. Intra-layer coupling on / off (v2)
 
-![Coupling on/off](./v2/compare/test2nocoupling/compare_plots/loss.png)
+![Coupling on/off](https://x005-0001-0001.github.io/Waver-SNN-SSM/v2/compare/test2nocoupling/compare_plots/loss.png)
 
 > In the later (overfitting) phase, the model **with coupling enabled** shows a small but consistent advantage.
 
@@ -354,13 +354,13 @@ Strictly controlled: same vocab, same optimizer, same hyperparameters; the Trans
 
 | Training loss | Validation PPL | Memory usage |
 |---|---|---|
-| ![v4.1 loss](./compare/v4.1/loss.png) | ![v4.1 ppl](./compare/v4.1/ppl.png) | ![v4.1 memory](./compare/v4.1/memory.png) |
+| ![v4.1 loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/loss.png) | ![v4.1 ppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/ppl.png) | ![v4.1 memory](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/v4.1/memory.png) |
 
 More curves (log / log-log axes, difference, learning rate, activity) are in [`compare/v4.1/`](./compare/v4.1/).
 
 ### 4. v1 1.6B model — training overview
 
-![v1 overview](./v1/plots/overview.png)
+![v1 overview](https://x005-0001-0001.github.io/Waver-SNN-SSM/v1/plots/overview.png)
 
 > With only ~17.9M tokens (far below the Chinchilla optimum), the 1.6B model brings loss from ~10 down to ~5 and PPL from ~49000 down to ~200 — strong evidence for the architecture.
 
@@ -380,7 +380,7 @@ Full report and probe scripts: [`compare/v6/`](./compare/v6/) and [`compare/READ
 The `.py` inside each version directory is the complete program — just run it and use the menu:
 
 ```bash
-python v5/312005elite.py
+python v7/312007elite.py
 ```
 
 All key parameters (model architecture, optimizer, data paths, MoE, memory optimizations, etc.) are defined as constants at the top of the file.
