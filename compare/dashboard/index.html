@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>对比实验看板</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#111721; --panel2:#0b1017; --bd:#1f2937; --bd2:#26313f;
+  --fg:#e6edf3; --fg2:#9aa7b4; --fg3:#6b7684; --accent:#58a6ff;
+  --good:#3fb950; --warn:#f0883e; --bad:#f778ba;
+  --grid:#1b2430; --grid2:#151d27;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+}
+:root[data-theme="light"]{
+  --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfcfd; --bd:#e3e7ec; --bd2:#eef1f4;
+  --fg:#111827; --fg2:#4b5563; --fg3:#8b95a1; --accent:#0969da;
+  --good:#1a7f37; --warn:#bc4c00; --bad:#bf3989;
+  --grid:#eef1f4; --grid2:#f4f6f8;
+  --shadow:0 1px 2px rgba(16,24,40,.06);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--fg);
+  font:12px/1.5 "SF Mono",ui-monospace,Consolas,"Cascadia Mono","Microsoft YaHei",monospace;
+  display:flex; flex-direction:column; height:100vh; overflow:hidden;
+}
+button,input,select{font:inherit;color:inherit}
+button{
+  background:var(--panel2); border:1px solid var(--bd); border-radius:5px;
+  padding:3px 9px; cursor:pointer;
+}
+button:hover{border-color:var(--accent)}
+button.on{background:color-mix(in srgb,var(--accent) 18%,transparent); border-color:var(--accent); color:var(--accent)}
+button.mini{padding:1px 7px}
+input[type=range]{width:110px;vertical-align:middle}
+input[type=text]{background:var(--panel2);border:1px solid var(--bd);border-radius:5px;padding:2px 6px}
+
+/* ---------- layout ---------- */
+header{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--panel);
+}
+header .title{font-weight:600;font-size:13px;letter-spacing:.3px}
+header .sep{width:1px;height:18px;background:var(--bd)}
+header .grow{flex:1}
+main{flex:1;display:flex;min-height:0}
+aside{
+  width:262px;min-width:262px;border-right:1px solid var(--bd);background:var(--panel);
+  display:flex;flex-direction:column;min-height:0;
+}
+section{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto}
+
+/* ---------- sidebar ---------- */
+.toolbar{display:flex;gap:4px;padding:6px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.runs{overflow:auto;flex:1;padding:2px 0}
+.run{
+  display:flex;align-items:flex-start;gap:7px;padding:5px 9px;cursor:pointer;
+  border-left:3px solid transparent;
+}
+.run:hover{background:var(--panel2)}
+.run.sel{border-left-color:var(--accent);background:var(--panel2)}
+.run .dot{width:9px;height:9px;border-radius:50%;margin-top:3px;flex:0 0 auto}
+.run .meta{min-width:0;flex:1}
+.run .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px}
+.run .sub{color:var(--fg3);font-size:10.5px;display:flex;gap:7px;flex-wrap:wrap}
+.pill{border:1px solid var(--bd);border-radius:99px;padding:0 5px;font-size:10px;color:var(--fg3)}
+.pill.run{color:var(--good);border-color:var(--good)}
+.pill.best{color:var(--accent);border-color:var(--accent)}
+
+/* ---------- tabs ---------- */
+.tabs{display:flex;gap:4px;padding:6px 10px 0;flex-wrap:wrap;align-items:center}
+.tab{padding:3px 11px;border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;color:var(--fg2)}
+.tab.on{background:var(--panel);border-color:var(--bd);color:var(--fg)}
+.ctrls{display:flex;gap:9px;align-items:center;padding:5px 10px;flex-wrap:wrap;color:var(--fg2)}
+.ctrls label{display:flex;gap:4px;align-items:center;white-space:nowrap}
+
+/* ---------- cards ---------- */
+.card{background:var(--panel);border-top:1px solid var(--bd);padding:8px 10px 10px}
+.card h3{margin:0 0 6px;font-size:11.5px;font-weight:600;color:var(--fg2);letter-spacing:.4px}
+.chart{width:100%;display:block}
+.legend{display:flex;gap:12px;flex-wrap:wrap;padding:5px 2px 0;color:var(--fg2)}
+.legend span{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+.legend span.off{opacity:.35;text-decoration:line-through}
+.legend i{width:11px;height:3px;border-radius:2px;display:inline-block}
+
+/* ---------- tables ---------- */
+table{border-collapse:collapse;width:100%;font-size:11px}
+th,td{padding:3px 7px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--grid)}
+th{color:var(--fg3);font-weight:500;text-align:right;position:sticky;top:0;background:var(--panel)}
+th:first-child,td:first-child{text-align:left}
+tbody tr:hover{background:var(--panel2)}
+td.na{color:var(--fg3)}
+.bestcell{color:var(--accent);font-weight:600}
+.small{color:var(--fg3)}
+.tblwrap{max-height:280px;overflow:auto;border:1px solid var(--bd);border-radius:6px}
+
+/* ---------- tooltip ---------- */
+#tip{
+  position:fixed;pointer-events:none;z-index:50;display:none;
+  background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--bd2);
+  border-radius:6px;padding:6px 8px;box-shadow:var(--shadow);font-size:11px;max-width:340px;
+}
+#tip .r{display:flex;gap:8px;justify-content:space-between}
+#tip .r b{font-weight:600}
+#tip .hd{color:var(--fg3);margin-bottom:3px}
+#status{color:var(--fg3)}
+#status.live{color:var(--good)}
+.banner{
+  padding:5px 10px;background:color-mix(in srgb,var(--warn) 14%,transparent);
+  border-bottom:1px solid var(--bd);color:var(--warn);display:none
+}
+
+/* ---------- 运行中曲线的"浮动光效" ---------- */
+@keyframes cdPulse{ 0%,100%{opacity:.10} 50%{opacity:.55} }
+@keyframes cdPulseDot{ 0%,100%{opacity:.45;transform:scale(.8)} 50%{opacity:1;transform:scale(1.35)} }
+.glow{ animation:cdPulse 2.2s ease-in-out infinite; filter:blur(3.5px); }
+.glow.dot{ animation:cdPulse 1.6s ease-in-out infinite; filter:blur(5px); }
+.livedot{ animation:cdPulseDot 1.5s ease-in-out infinite; transform-origin:center; transform-box:fill-box; }
+.livedot-ring{ animation:cdPulse 2.4s ease-in-out infinite; }
+.legend .live{ color:var(--good); }
+@keyframes cdBlink{ 0%,100%{opacity:1} 50%{opacity:.15} }
+.legend .live b{ animation:cdBlink 1.4s ease-in-out infinite; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="title">对比实验看板</span>
+  <span class="sep"></span>
+  <button id="btnLive" class="on" title="有新日志时自动刷新">实时</button>
+  <label class="small">间隔 <input type="range" id="interval" min="2" max="30" step="1" value="2"><span id="ivLabel">2s</span></label>
+  <span class="sep"></span>
+  <label class="small" title="平滑窗口 = 等效平均的步数（指数刻度，右端≈2000 步）">平滑 <input type="range" id="smooth" min="0" max="1000" step="1" value="1000"><span id="smLabel">≈2001步</span></label>
+  <button id="btnLog" class="on">对数Y</button>
+  <button id="btnDiff">差值</button>
+  <button id="btnBase" title="点选基准 run">基准: —</button>
+  <span class="sep"></span>
+  <label class="small">横轴
+    <select id="xaxis">
+      <option value="seq">记录序号</option>
+      <option value="step">step</option>
+      <option value="epoch">epoch</option>
+    </select>
+  </label>
+  <span class="grow"></span>
+  <button id="btnRefresh">立即刷新</button>
+  <button id="btnTheme">主题</button>
+  <span id="status">—</span>
+</header>
+
+<div class="banner" id="banner"></div>
+
+<main>
+  <aside>
+    <div class="toolbar">
+      <button class="mini" id="bAll">全选</button>
+      <button class="mini" id="bRecent" title="选日志在近 72 小时内更新过的那一批">最近批次</button>
+      <button class="mini" id="bNone">全清</button>
+      <button class="mini" id="bInv">反选</button>
+      <button class="mini" id="bBest">仅前3优</button>
+      <button class="mini" id="bSort">按最优排序</button>
+    </div>
+    <div style="padding:0 6px 6px"><input type="text" id="filter" placeholder="筛选 run 名（支持空格分隔多个）" style="width:100%"></div>
+    <div class="runs" id="runs"></div>
+    <div style="padding:6px 9px;border-top:1px solid var(--bd)" class="small" id="selInfo">—</div>
+  </aside>
+
+  <section>
+    <div class="tabs" id="tabs"></div>
+    <div class="ctrls">
+      <span id="chartInfo" class="small"></span>
+      <span class="grow" style="flex:1"></span>
+      <span class="small">滚轮缩放 · 拖拽平移 · 双击复位</span>
+    </div>
+
+    <div class="card">
+      <h3 id="h1">训练曲线</h3>
+      <svg class="chart" id="c1"></svg>
+      <div class="legend" id="lg1"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="display:flex;align-items:center;gap:8px">
+        <span id="h2">差值</span>
+        <span style="flex:1"></span>
+        <button class="mini" id="c2Diff" title="各 run 减去基准（插值对齐），最适合区分近似曲线">差值</button>
+        <button class="mini" id="c2Val" title="每个 epoch 的验证指标">验证</button>
+      </h3>
+      <svg class="chart" id="c2"></svg>
+      <div class="legend" id="lg2"></div>
+    </div>
+
+    <div class="card">
+      <h3>运行对比</h3>
+      <div class="tblwrap"><table id="tblRuns"></table></div>
+    </div>
+
+    <div class="card">
+      <h3>Epoch 明细 <span class="small">（训练 loss 为该 epoch 均值；验证取自日志与 best_*.pt 文件名）</span></h3>
+      <div class="tblwrap"><table id="tblEpochs"></table></div>
+    </div>
+  </section>
+</main>
+
+<div id="tip"></div>
+
+<script>
+"use strict";
+const PALETTE = ["#58a6ff","#f0883e","#3fb950","#d2a8ff","#f778ba","#a5d6ff","#ffa657","#7ee787",
+                 "#ff7b72","#79c0ff","#56d364","#e3b341","#bc8cff","#ffa198","#39c5cf","#db61a2"];
+const COLOR = {};   // run -> color (稳定分配)
+
+const METRICS = [
+  {k:"loss",  name:"Loss"},
+  {k:"ppl",   name:"PPL"},
+  {k:"lr",    name:"LR"},
+  {k:"act",   name:"Activity"},
+  {k:"rss",   name:"Memory(MB)"},
+  {k:"val_ppl", name:"验证PPL(epoch)"},
+  {k:"val_loss",name:"验证Loss(epoch)"},
+];
+
+const S = {
+  runs: {},            // name -> snapshot
+  order: [],           // 名称顺序
+  colorIdx: {},        // name -> 调色板下标（按顺序分配，避免哈希撞色）
+  sel: new Set(),
+  hidden: new Set(),   // 图例里被关掉的曲线
+  metric: "loss",
+  smooth: 0.99,        // EMA 权重 w（0=不平滑）—— 启动时由滑块初值覆盖
+  smoothWin: 100,      // 等效平均窗口（步），仅用于显示与滑块映射
+  logY: true,          // 默认开对数（直播等无法手动调的场合）
+  diff: false,         // 主图差值（默认关；第二张图默认是验证指标）
+  c2mode: "val",       // 第二张图：'val'=验证 PPL（默认） | 'diff'=差值（最能区分近似曲线）
+  interval: 2,         // 实时刷新间隔（秒）
+  baseline: null,
+  xaxis: "seq",
+  live: true,
+  interval: 5,
+  version: -1,
+  series: {},
+  seriesKey: "",
+  _seriesSeq: 0,       // 请求序号，用于丢弃过期响应
+  c1view: null,        // {x0,x1} 缩放窗口
+  c2view: null,
+  busy: false,
+  lastData: null,
+  epochs: {},
+};
+
+/* ================= utils ================= */
+const $ = s => document.querySelector(s);
+const fmt = (v, d=4) => (v==null||Number.isNaN(v)) ? "—" : (Math.abs(v)>=1e5||(Math.abs(v)<1e-4&&v!==0)) ? v.toExponential(2) : v.toFixed(d);
+const fmtP = v => (v==null||Number.isNaN(v)) ? "—" : v.toFixed(2);
+const fmtI = v => (v==null||Number.isNaN(v)) ? "—" : Math.round(v).toLocaleString("en-US");
+const fmtM = v => (v==null) ? "—" : (v/1e6).toFixed(2)+"M";
+const fmtT = s => (s==null) ? "—" : (s<60? s.toFixed(1)+"s" : s<3600? (s/60).toFixed(1)+"min" : (s/3600).toFixed(1)+"h");
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function colorOf(name){
+  if(S.colorIdx[name]==null) return "#8b949e";
+  return PALETTE[S.colorIdx[name] % PALETTE.length];
+}
+function niceTicks(lo, hi, want){
+  if(!isFinite(lo)||!isFinite(hi)||lo===hi) return [lo];
+  const span = hi-lo, raw = span/Math.max(1,want);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw/mag;
+  const step = (norm<=1?1:norm<=2?2:norm<=2.5?2.5:norm<=5?5:10)*mag;
+  const out=[]; let t=Math.ceil(lo/step)*step;
+  for(; t<=hi+step*1e-9 && out.length<60; t+=step) out.push(Math.abs(t)<step*1e-9?0:t);
+  return out;
+}
+function logTicks(lo, hi){
+  const out=[];
+  for(let e=Math.floor(Math.log10(lo)); e<=Math.ceil(Math.log10(hi)); e++){
+    for(const m of [1,2,5]){ const v=m*Math.pow(10,e); if(v>=lo&&v<=hi) out.push(v); }
+  }
+  return out.length? out : [lo,hi];
+}
+
+/* ================= 平滑滑块 =================
+   指数刻度：滑块位置 p(0..1000) 线性映射到 ln(窗口)，使整条行程都有可见效果。
+   窗口 W = 等效平均步数；EMA 权重 w = 1 - 1/W（W=1 即不平滑）。 */
+const SM_MAXW = 2000;
+const posToWin = p => Math.max(1, Math.round(Math.exp((p/1000)*Math.log(SM_MAXW+1))));
+const winToW   = win => win<=1 ? 0 : 1 - 1/win;
+let _smT = null;
+function smoothLabel(win){ return win<=1 ? "关" : "≈"+win+"步"; }
+function setSmooth(pos, debounce){
+  const win = posToWin(pos);
+  S.smoothWin = win;
+  S.smooth = winToW(win);
+  $("#smLabel").textContent = smoothLabel(win);
+  const fire = ()=>{ S.seriesKey=""; refreshSeries(); };
+  clearTimeout(_smT);
+  if(debounce) _smT = setTimeout(fire, 130);   // 拖动期间只在停顿后发一次请求
+  else fire();
+}
+
+/* ================= chart ================= */
+function makeChart(svg, opts){
+  // opts: {series:[{name,color,x:[],y:[]}], marks:[], logY, yFmt, view, onView, height}
+  const NS="http://www.w3.org/2000/svg";
+  const W = svg.clientWidth || 800, H = opts.height || 300;
+  const M = {l:58, r:14, t:10, b:26};
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("height", H);
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  const el = (t, a={}) => { const e=document.createElementNS(NS,t); for(const k in a) e.setAttribute(k,a[k]); return e; };
+
+  const ser = opts.series.filter(s => s.x.length && s.y.some(v => isFinite(v)));
+  if(!ser.length){
+    svg._geo = null;
+    const t=el("text",{x:W/2,y:H/2,fill:"var(--fg3)","text-anchor":"middle","font-size":"12"});
+    t.textContent="无可绘制数据"; svg.appendChild(t); return;
+  }
+  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+  for(const s of ser) for(let i=0;i<s.x.length;i++){
+    const X=s.x[i], Y=s.y[i];
+    if(!isFinite(X)||!isFinite(Y)) continue;
+    if(X<x0)x0=X; if(X>x1)x1=X; if(Y<y0)y0=Y; if(Y>y1)y1=Y;
+  }
+  if(!isFinite(x0)||!isFinite(y0)){ svg._geo=null; return; }
+  const v = S.view[opts.viewKey];
+  let vx0 = v? v.x0 : x0, vx1 = v? v.x1 : x1;
+  if(vx1<=vx0){ vx0=x0; vx1=x1||x0+1; }
+  const px = X => M.l + (X-vx0)/(vx1-vx0||1)*(W-M.l-M.r);
+  const useLog = opts.logY && y0>0;
+  const ly0 = useLog? Math.log10(y0) : y0, ly1 = useLog? Math.log10(y1) : y1;
+  const pad = useLog? 0 : (ly1-ly0)*0.06 || 0.5;
+  const Y0 = ly0-pad, Y1 = ly1+pad;
+  const py = Y => M.t + (1-(Y-Y0)/((Y1-Y0)||1))*(H-M.t-M.b);
+  const pyv = Y => py(useLog? Math.log10(Math.max(Y,1e-12)) : Y);
+
+  // grid
+  const yticks = useLog? logTicks(y0,y1) : niceTicks(Y0,Y1,5);
+  for(const t of yticks){
+    const Y = pyv(t); if(Y<M.t-1||Y>H-M.b+1) continue;
+    svg.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y,y2:Y,stroke:"var(--grid)"}));
+    const tx=el("text",{x:M.l-6,y:Y+3,fill:"var(--fg3)","text-anchor":"end","font-size":"10"});
+    tx.textContent = Math.abs(t)>=1e5||(Math.abs(t)<1e-3&&t!==0)? t.toExponential(1) : (+t.toFixed(6)).toString();
+    svg.appendChild(tx);
+  }
+  const xticks = niceTicks(vx0,vx1,7);
+  for(const t of xticks){
+    const X = px(t); if(X<M.l-1||X>W-M.r+1) continue;
+    svg.appendChild(el("line",{x1:X,x2:X,y1:M.t,y2:H-M.b,stroke:"var(--grid2)"}));
+    const tx=el("text",{x:X,y:H-M.b+13,fill:"var(--fg3)","text-anchor":"middle","font-size":"10"});
+    tx.textContent = Math.abs(t)>=1e5? t.toExponential(1) : (Math.abs(t)>=1000? Math.round(t).toLocaleString("en-US") : (+t.toFixed(3)).toString());
+    svg.appendChild(tx);
+  }
+  // epoch marks
+  for(const mk of (opts.marks||[])){
+    const X=px(mk[0]); if(X<M.l||X>W-M.r) continue;
+    svg.appendChild(el("line",{x1:X,x2:X,y1:M.t,y2:H-M.b,stroke:"var(--bd2)","stroke-dasharray":"2 3"}));
+    const tx=el("text",{x:X+3,y:M.t+10,fill:"var(--fg3)","font-size":"9"});
+    tx.textContent="E"+mk[1]; svg.appendChild(tx);
+  }
+  svg.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:H-M.b,y2:H-M.b,stroke:"var(--bd)"}));
+  svg.appendChild(el("line",{x1:M.l,x2:M.l,y1:M.t,y2:H-M.b,stroke:"var(--bd)"}));
+
+  // lines
+  const paths=[];
+  const lastPt={};                         // name -> 末尾点屏幕坐标（给运行中的亮点用）
+  for(const s of ser){
+    if(S.hidden.has(s.name)) continue;
+    let d="", pen=false, li=-1;
+    for(let i=0;i<s.x.length;i++){
+      const X=s.x[i], Y=s.y[i];
+      if(!isFinite(X)||!isFinite(Y)||X<vx0||X>vx1){ pen=false; continue; }
+      const sx=px(X), sy=pyv(Y);
+      d += (pen? "L":"M") + sx.toFixed(1)+" "+sy.toFixed(1)+" ";
+      pen=true; li=i;
+    }
+    if(!d) continue;
+    // 运行中的 run：先铺一层同色发光底（脉冲+模糊），再压上清晰的细线
+    const isRunning = !!(S.runs[s.name] && S.runs[s.name].status === "running");
+    if(isRunning){
+      svg.appendChild(el("path",{d, fill:"none", stroke:s.color, "stroke-width":"10",
+        "stroke-linecap":"round","stroke-linejoin":"round", class:"glow"}));
+    }
+    paths.push(svg.appendChild(el("path",{d,fill:"none",stroke:s.color,
+      "stroke-width": isRunning? "2.2":"1.5","stroke-linejoin":"round"})));
+    if(isRunning && li>=0) lastPt[s.name]={x:px(s.x[li]), y:pyv(s.y[li]), c:s.color};
+  }
+  // 运行中曲线的末尾亮点（画在所有曲线之上）
+  for(const k in lastPt){
+    const p=lastPt[k];
+    svg.appendChild(el("circle",{cx:p.x, cy:p.y, r:11, fill:p.c, class:"glow dot"}));
+    svg.appendChild(el("circle",{cx:p.x, cy:p.y, r:6, fill:"none", stroke:p.c,
+      "stroke-width":"1.3", class:"livedot-ring"}));
+    svg.appendChild(el("circle",{cx:p.x, cy:p.y, r:3.6, fill:p.c, class:"livedot"}));
+  }
+  svg._geo = {W,H,M,vx0,vx1,y0,y1,useLog,px,pyv,ser};
+
+  // interaction
+  if(!svg._bound){
+    svg._bound = true;
+    const tip=$("#tip");
+    svg.addEventListener("mousemove", ev => {
+      const g=svg._geo; if(!g) return;
+      const r=svg.getBoundingClientRect();
+      const sx=(ev.clientX-r.left)*(g.W/r.width), sy=(ev.clientY-r.top)*(g.H/r.height);
+      const X = g.vx0 + (sx-g.M.l)/(g.W-g.M.l-g.M.r)*(g.vx1-g.vx0);
+      const rows=[]; let bestX=null;
+      for(const s of g.ser){
+        if(S.hidden.has(s.name)) continue;
+        let bi=-1, bd=Infinity;
+        for(let i=0;i<s.x.length;i++){
+          const d=Math.abs(s.x[i]-X); if(d<bd){bd=d;bi=i;}
+        }
+        if(bi>=0 && bd < (g.vx1-g.vx0)*0.05){
+          rows.push({name:s.name,color:s.color,x:s.x[bi],y:s.y[bi]});
+          bestX = s.x[bi];
+        }
+      }
+      if(!rows.length){ tip.style.display="none"; return; }
+      rows.sort((a,b)=>a.y-b.y);
+      const cx=g.px(bestX);
+      tip.innerHTML = `<div class="hd">x = ${(+bestX.toFixed(3))}${S.xaxis==="epoch"?" epoch":""}</div>` +
+        rows.map(r=>`<div class="r"><span style="color:${r.color}">■ ${esc(r.name)}</span><b>${fmt(r.y,4)}</b></div>`).join("");
+      tip.style.display="block";
+      const tw=tip.offsetWidth, th=tip.offsetHeight;
+      tip.style.left = Math.min(window.innerWidth-tw-8, Math.max(4, ev.clientX+14))+"px";
+      tip.style.top  = Math.min(window.innerHeight-th-8, Math.max(4, ev.clientY-th-12))+"px";
+      if(svg._cross) svg.removeChild(svg._cross);
+      svg._cross = el("line",{x1:cx,x2:cx,y1:g.M.t,y2:g.H-g.M.b,stroke:"var(--accent)","stroke-dasharray":"3 3","opacity":.8});
+      svg.appendChild(svg._cross);
+    });
+    svg.addEventListener("mouseleave", ()=>{ $("#tip").style.display="none"; if(svg._cross){svg.removeChild(svg._cross);svg._cross=null;} });
+    svg.addEventListener("wheel", ev => {
+      if(!S.view) return;
+      ev.preventDefault();
+      const g=svg._geo; if(!g) return;
+      const r=svg.getBoundingClientRect();
+      const f=(ev.clientX-r.left)/r.width;
+      const X=g.vx0 + f*(g.vx1-g.vx0);
+      const k=ev.deltaY>0?1.18:1/1.18;
+      let a=X-(X-g.vx0)*k, b=X+(g.vx1-X)*k;
+      const span=g.vx1-g.vx0;
+      if(b-a > (x1-x0)*1.001 || b-a < span*0.02) return;
+      S.view[opts.viewKey]={x0:a,x1:b}; redraw();
+    }, {passive:false});
+    let drag=null;
+    svg.addEventListener("mousedown", ev=>{ drag={x:ev.clientX, v: S.view&&S.view[opts.viewKey]? {...S.view[opts.viewKey]}:{x0:vx0,x1:vx1}, g:svg._geo}; });
+    window.addEventListener("mouseup", ()=>{ drag=null; });
+    svg.addEventListener("mousemove", ev=>{
+      if(!drag||!drag.g) return;
+      const r=svg.getBoundingClientRect();
+      const dx=(ev.clientX-drag.x)/r.width*(drag.v.x1-drag.v.x0);
+      S.view[opts.viewKey]={x0:drag.v.x0-dx, x1:drag.v.x1-dx};
+      redraw();
+    });
+    svg.addEventListener("dblclick", ()=>{ if(S.view) {S.view[opts.viewKey]=null; redraw();} });
+  }
+}
+
+/* ================= data ================= */
+async function getJSON(url){
+  const r = await fetch(url, {cache:"no-store"});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return await r.json();
+}
+function selList(){ return S.order.filter(n => S.sel.has(n)); }
+
+function renderSidebar(){
+  const box=$("#runs");
+  const toks=($("#filter").value||"").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = S.order.filter(n => !toks.length || toks.every(t => n.toLowerCase().includes(t)));
+  box.innerHTML = shown.map(n=>{
+    const r=S.runs[n], c=colorOf(n), on=S.sel.has(n);
+    const st = r.status==="running"? `<span class="pill run">运行中</span>` : `<span class="pill">已停</span>`;
+    const best = S.bestOf[n];
+    const isBest = best!=null && best===S.minBest;
+    return `<div class="run ${on?"sel":""}" data-n="${esc(n)}">
+      <span class="dot" style="background:${c}"></span>
+      <span class="meta">
+        <span class="nm" title="${esc(n)}">${esc(n)}</span>
+        <span class="sub">${st}
+          <span title="验证 PPL 最优">PPL ${best==null?"—":fmtP(best)}${isBest?" ★":""}</span>
+          <span>${r.points||0} pt</span>
+          <span title="${r.params_src==='log'?'参数量：训练日志（菜单6，权威）':'参数量：checkpoint 去重统计（近似）'}">${r.params==null?"—":(r.params_src==='log'?fmtM(r.params):'~'+fmtM(r.params))}</span>
+          ${r.speed!=null?`<span>${r.speed.toFixed(1)}/s</span>`:""}
+        </span>
+      </span>
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".run").forEach(el=>{
+    el.onclick = ()=>{
+      const n = el.dataset.n;
+      if(S.sel.has(n)) S.sel.delete(n); else S.sel.add(n);
+      if(!S.baseline || !S.sel.has(S.baseline)) S.baseline = pickBaseline();
+      afterSelectionChange();
+    };
+  });
+  $("#selInfo").textContent = `已选 ${S.sel.size} / ${S.order.length}` + (shown.length!==S.order.length? `　（筛出 ${shown.length}）`:"");
+  renderBaseBtn();
+}
+function renderBaseBtn(){ $("#btnBase").textContent = "基准: " + (S.baseline? S.baseline.slice(0,18) : "—"); }
+
+function renderTabs(){
+  $("#tabs").innerHTML = METRICS.map(m=>
+    `<div class="tab ${m.k===S.metric?"on":""}" data-k="${m.k}">${m.name}</div>`).join("");
+  $("#tabs").querySelectorAll(".tab").forEach(t=>{
+    t.onclick = ()=>{ S.metric=t.dataset.k; S.c1view=null; renderTabs(); refreshSeries(); };
+  });
+}
+
+function renderLegend(sel, data, elId, svgKey){
+  const box=$(elId);
+  box.innerHTML = sel.map(n=>{
+    const s=data[n]; if(!s) return "";
+    const off=S.hidden.has(n)?"off":"";
+    const run = !!(S.runs[n] && S.runs[n].status==="running");
+    const live = run ? `<b title="正在训练" style="color:var(--good)">●</b> ` : "";
+    return `<span class="${off} ${run?"live":""}" data-n="${esc(n)}"><i style="background:${colorOf(n)}"></i>${live}${esc(n)}</span>`;
+  }).join("");
+  box.querySelectorAll("span").forEach(sp=>{
+    sp.onclick=()=>{ const n=sp.dataset.n; if(S.hidden.has(n)) S.hidden.delete(n); else S.hidden.add(n); redraw(); };
+  });
+}
+
+function interp(xs, ys, X){
+  let lo=0, hi=xs.length-1;
+  if(!xs.length) return NaN;
+  if(X<=xs[0]) return ys[0];
+  if(X>=xs[hi]) return ys[hi];
+  while(hi-lo>1){ const m=(lo+hi)>>1; if(xs[m]<=X) lo=m; else hi=m; }
+  const t=(X-xs[lo])/((xs[hi]-xs[lo])||1);
+  return ys[lo]*(1-t)+ys[hi]*t;
+}
+
+function hasData(data, n){ return !!(data[n] && data[n].x && data[n].x.length); }
+// 选中集变化后的统一收口：侧栏 + 曲线 + 表格（三者都必须同步，否则表格会残留已取消的 run）
+function afterSelectionChange(){
+  renderSidebar();
+  S.seriesKey = "";
+  refreshSeries();
+  refreshEpochs();
+}
+// 默认/一键：选「最近改动过日志的那个批次」。批次 = 名称前缀「第N轮」；无该前缀则视作单独一批。
+// 不足 2 个时退化为全部有数据的 run。
+function batchKey(n){
+  const m = String(n).match(/^第[0-9一二三四五六七八九十]+轮/);
+  return m ? m[0] : n;
+}
+function recentRuns(){
+  const withData = S.order.filter(n => S.runs[n] && (S.runs[n].points||0)>0);
+  if(!withData.length) return [];
+  let best=null, bt=-1;
+  for(const n of withData){ const t=S.runs[n].mtime||0; if(t>bt){ bt=t; best=n; } }
+  const k = batchKey(best);
+  const grp = withData.filter(n => batchKey(n)===k);
+  return grp.length>=2 ? grp : withData;
+}
+function pickBaseline(){
+  const l = selList();
+  return l.find(n => (S.runs[n] && (S.runs[n].points||0) > 0)) || l[0] || S.order[0] || null;
+}
+
+function buildDiff(sel, data){
+  // 以 baseline 为基准，其余序列 - 基准（在基准曲线上插值对齐）
+  // 基准必须是有数据的 run，否则整张图会全 NaN
+  const bname = hasData(data, S.baseline) ? S.baseline
+              : (sel.find(n => hasData(data, n)) || null);
+  if(!bname) return {series:[], marks:[], base:null};
+  const base = data[bname];
+  const out=[];
+  for(const n of sel){
+    if(n===bname || !hasData(data, n)) continue;
+    const s=data[n];
+    const y=s.y.map((v,i)=> v - interp(base.x, base.y, s.x[i]));
+    if(y.some(v=>isFinite(v))) out.push({name:n, color:colorOf(n), x:s.x, y});
+  }
+  return {series:out, marks: base.marks||[], base:bname};
+}
+
+function hline(svg, Y, color, dash){
+  const g=svg._geo; if(!g) return;
+  const y=g.pyv(Y);
+  if(!(y>=g.M.t-1 && y<=g.H-g.M.b+1)) return;
+  const NS="http://www.w3.org/2000/svg";
+  const l=document.createElementNS(NS,"line");
+  l.setAttribute("x1",g.M.l); l.setAttribute("x2",g.W-g.M.r);
+  l.setAttribute("y1",y); l.setAttribute("y2",y);
+  l.setAttribute("stroke",color||"var(--fg3)");
+  if(dash) l.setAttribute("stroke-dasharray",dash);
+  svg.appendChild(l);
+}
+
+function drawSecond(sel, data){
+  // 第二张图两种模式：
+  //   'diff'（默认）—— 当前指标相对基准的差值。近似曲线在原图上必然重叠，
+  //                    差值图把它们拉到同一水平后放大，是唯一真正能"分开"的看法。
+  //   'val'        —— 每 epoch 的验证指标（数据取自 /api/runs，无需额外请求）
+  const svg=$("#c2");
+  const wrap=$("#h2").parentElement;
+  $("#c2Diff").classList.toggle("on", S.c2mode==="diff");
+  $("#c2Val").classList.toggle("on", S.c2mode==="val");
+  let mk={};
+  if(S.c2mode==="diff"){
+    const d=buildDiff(sel, data||{});
+    for(const s of d.series) mk[s.name]={name:s.name,color:s.color,x:s.x,y:s.y};
+    $("#h2").textContent = `差值（相对基准 ${d.base||"—"}）　${METRICS.find(m=>m.k===S.metric)?.name||S.metric}`;
+    makeChart(svg,{series:Object.values(mk),marks:[],logY:false,height:250,viewKey:"c2"});
+    hline(svg,0,"var(--fg3)","4 4");
+  }else{
+    const useLoss = (S.metric==="val_ppl");
+    $("#h2").textContent = useLoss ? "验证 Loss（按 epoch）" : "验证 PPL（按 epoch）";
+    for(const n of sel){
+      const r=S.runs[n]; if(!r) continue;
+      const pts=r.val||[]; if(!pts.length) continue;
+      mk[n]={name:n,color:colorOf(n),x:pts.map(p=>p[0]), y:pts.map(p=> useLoss? p[1] : p[2])};
+    }
+    makeChart(svg,{series:Object.values(mk),marks:[],logY:false,height:250,viewKey:"c2"});
+  }
+  renderLegend(sel, mk, "#lg2", "c2");
+}
+
+function redraw(){
+  const sel=selList(), data=S.lastData||{};
+  if(!sel.length){ makeChart($("#c1"), {series:[],marks:[],height:300,viewKey:"c1"}); $("#lg1").innerHTML=""; $("#h1").textContent="训练曲线"; makeChart($("#c2"),{series:[],marks:[],height:240,viewKey:"c2"}); return; }
+  let ser=[], marks=[], lgSkip=null;
+  if(S.diff){
+    const d=buildDiff(sel, data);
+    ser=d.series; marks=[]; lgSkip=d.base||S.baseline;
+    $("#h1").textContent = "差值（相对基准 " + (d.base||"—") + "）";
+  }else{
+    for(const n of sel) if(data[n]) ser.push({name:n,color:colorOf(n),x:data[n].x,y:data[n].y});
+    marks = (data[sel[0]]&&data[sel[0]].marks)||[];
+    const m=METRICS.find(x=>x.k===S.metric);
+    $("#h1").textContent = (m?m.name:S.metric) + (S.smoothWin>1 ? `　(平滑 ≈${S.smoothWin} 步)` : "　(不平滑)");
+  }
+  makeChart($("#c1"), {series:ser, marks, logY:S.logY, height:300, viewKey:"c1"});
+  if(S.diff) hline($("#c1"), 0, "var(--fg3)", "4 4");
+  renderLegend(sel.filter(n=>n!==lgSkip), data, "#lg1", "c1");
+  drawSecond(sel, data);
+  $("#chartInfo").textContent = `${sel.length} 条曲线 · ${(data[sel[0]]&&data[sel[0]].x.length)||0} 点/条（已降采样）`;
+}
+
+async function refreshSeries(){
+  const sel=selList();
+  if(!sel.length){ S.lastData={}; S.seriesKey=""; redraw(); renderTables(); return; }
+  // 缓存键**必须带数据版本 S.version**：否则首次取完后每次 tick 都命中"键未变"，
+  // 只重绘不重取 —— 主图就永远停在第一次的数据上（等于不实时更新）。
+  // S.version 来自 /api/runs，只在真的追加了日志时才变，所以无新数据时也不会白跑请求。
+  const key = [sel.join(","), S.metric, S.smooth, S.xaxis, S.version].join("|");
+  if(key===S.seriesKey && S.lastData){ redraw(); return; }
+  const my = ++S._seriesSeq;                       // 请求序号：只采纳最新一次的结果
+  const url = `/api/series?runs=${encodeURIComponent(sel.join(","))}&metric=${S.metric}&smooth=${S.smooth}&xaxis=${S.xaxis}&points=1400`;
+  try{
+    $("#chartInfo").textContent = "加载中…";
+    const j = await getJSON(url);
+    if(my !== S._seriesSeq) return;                // 已被更新的请求取代 → 丢弃（否则会"粘住"旧曲线）
+    S.lastData = j.series||{};
+    S.seriesKey = key;                             // 只有真正采纳时才记录，保证与 lastData 一致
+    redraw();
+  }catch(e){ if(my===S._seriesSeq) banner("取序列失败: "+e.message); }
+}
+
+async function refreshRuns(){
+  try{
+    const j = await getJSON("/api/runs");
+    const prev = S.order.join(",");
+    S.runs = {}; S.order = [];
+    for(const r of j.runs){ if(r.name){ S.runs[r.name]=r; S.order.push(r.name); } }
+    // 调色板按顺序分配（稳定、不撞色）
+    S.colorIdx = {};
+    S.order.forEach((n,i)=>{ S.colorIdx[n]=i; });
+    // 最优 PPL 与排名
+    S.bestOf = {}; let mn=null;
+    for(const n of S.order){ const b=S.runs[n].best_val_ppl; S.bestOf[n]=b; if(b!=null&&(mn==null||b<mn)) mn=b; }
+    S.minBest = mn;
+    // 首次自动选中「最近批次」（去掉没有可用数据的 run）
+    if(j.version!==S.version || prev!==S.order.join(",")){
+      if(S.sel.size===0){
+        S.sel = new Set(recentRuns());
+      }
+      for(const n of [...S.sel]) if(!S.runs[n]) S.sel.delete(n);
+      // 基准默认取「验证 PPL 最优」的那个 run —— 差值图就是"其余相对最优"，
+      // 比默认取字母序第一个更有意义
+      if(!S.baseline || !S.runs[S.baseline]){
+        const cand = selList().filter(n => S.bestOf[n]!=null)
+                              .sort((a,b)=>S.bestOf[a]-S.bestOf[b]);
+        S.baseline = cand[0] || pickBaseline();
+      }
+    }
+    S.version = j.version;
+    renderSidebar();
+    renderTables();
+    const now = new Date().toLocaleTimeString();
+    let tot=0; for(const n of S.order) tot += S.runs[n].points||0;
+    $("#status").textContent = `${S.order.length} runs · ${fmtI(tot)} 记录 · ${now}`;
+    return true;
+  }catch(e){ banner("取 run 列表失败: "+e.message); return false; }
+}
+
+function renderTables(){
+  const sel=selList();
+  // ---- 运行对比
+  const cols=["run","状态","参数","H","L","S","SEQ","Loop","配置","耦合","dk","最优验证PPL","@ep","最后loss","点数","速度","ETA"];
+  let html = "<thead><tr>"+cols.map(c=>`<th>${c}</th>`).join("")+"</tr></thead><tbody>";
+  const bestVals = sel.map(n=>S.runs[n]&&S.runs[n].best_val_ppl).filter(v=>v!=null);
+  const bv = bestVals.length? Math.min(...bestVals) : null;
+  for(const n of sel){
+    const r=S.runs[n]; if(!r){ continue; }
+    const c=r.config||{};
+    const loop = (c.USE_LOOP==="True")? (c.LOOP_CONFIG||"[1,...]") : "off";
+    const dk = c.SUMMARY_ATTN_DK||"—";
+    const isB = r.best_val_ppl!=null && Math.abs(r.best_val_ppl-bv)<1e-9;
+    html += `<tr>
+      <td title="${esc(n)}"><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${colorOf(n)}"></span> ${esc(n.slice(0,34))}</td>
+      <td>${r.status==="running"?"运行中":"已停"}</td>
+      <td title="${r.params_src==='log'?'来自训练日志（菜单6 打印的总参数，= sum(p.numel() for p in model.parameters())）':'来自 checkpoint 的 state_dict 按张量去重统计（近似，可能含极少量 buffer）'}">${r.params==null?'—':(r.params_src==='log'?fmtM(r.params):'~'+fmtM(r.params))}</td>
+      <td>${c.HIDDEN_SIZE||"—"}</td><td>${c.NUM_LAYERS||"—"}</td><td>${c.STATE_DIM||"—"}</td>
+      <td>${c.MAX_SEQ_LEN||"—"}</td>
+      <td>${esc(loop)}</td>
+      <td>${esc(c.SUMMARY_TYPE||"—")}${c.DISABLE_COUPLING==="True"?" /无耦合":""}</td>
+      <td>${c.DISABLE_COUPLING==="True"?"断开":"接通"}</td>
+      <td>${dk}</td>
+      <td class="${isB?"bestcell":""}">${fmtP(r.best_val_ppl)}</td>
+      <td>${r.best_val_epoch==null?"—":r.best_val_epoch}</td>
+      <td>${fmt(r.last_loss,4)}</td>
+      <td>${fmtI(r.points)}</td>
+      <td>${r.speed==null?"—":r.speed.toFixed(1)+"/s"}</td>
+      <td>${fmtT(r.eta)}</td>
+    </tr>`;
+  }
+  html += "</tbody>";
+  $("#tblRuns").innerHTML = html;
+
+  // ---- epoch 明细（并排：每个 run 一组列）
+  if(sel.length && S.epochs){
+    const eps = new Set();
+    for(const n of sel) (S.epochs[n]||[]).forEach(e=>eps.add(e.epoch));
+    const list=[...eps].sort((a,b)=>a-b);
+    let h="<thead><tr><th>Epoch</th>"+sel.map(n=>`<th colspan="3">${esc(n.slice(0,22))}</th>`).join("")+"</tr><tr><th></th>"+
+          sel.map(()=>"<th>train</th><th>val</th><th>valPPL</th>").join("")+"</tr></thead><tbody>";
+    for(const e of list){
+      h+=`<tr><td>${e}</td>`;
+      for(const n of sel){
+        const row=(S.epochs[n]||[]).find(x=>x.epoch===e)||{};
+        h+=`<td>${fmt(row.train_loss,4)}</td><td>${fmt(row.val_loss,4)}</td><td>${fmtP(row.val_ppl!=null?row.val_ppl:row.val_ppl_file)}</td>`;
+      }
+      h+="</tr>";
+    }
+    $("#tblEpochs").innerHTML = h+"</tbody>";
+  }else{
+    $("#tblEpochs").innerHTML="";
+  }
+}
+
+async function refreshEpochs(){
+  const sel=selList();
+  if(!sel.length){ S.epochs={}; renderTables(); return; }
+  try{ const j=await getJSON("/api/epochs?runs="+encodeURIComponent(sel.join(",")));
+       S.epochs=j.epochs||{}; renderTables(); }
+  catch(e){}
+}
+
+function banner(msg){
+  const b=$("#banner"); b.textContent=msg; b.style.display="block";
+  clearTimeout(b._t); b._t=setTimeout(()=>b.style.display="none", 6000);
+}
+
+/* ================= live ================= */
+function startSSE(){
+  try{
+    const es = new EventSource("/api/events");
+    es.onopen = ()=>{ $("#status").classList.add("live"); };
+    es.onerror = ()=>{ $("#status").classList.remove("live"); };
+    es.onmessage = ev=>{
+      const d = JSON.parse(ev.data);
+      if(!S.live) return;
+      const now=Date.now();
+      if(S._lastEv && now-S._lastEv < S.interval*1000*0.9) return;   // 节流
+      S._lastEv = now;
+      tick();
+    };
+  }catch(e){}
+}
+let _ticking=false;
+async function tick(){
+  if(_ticking) return; _ticking=true;
+  try{
+    await refreshRuns();
+    await refreshSeries();
+    await refreshEpochs();
+  } finally { _ticking=false; }
+}
+
+/* ================= ui wiring ================= */
+function applyTheme(t){ document.documentElement.dataset.theme=t; try{localStorage.setItem("cd_theme",t);}catch(e){} }
+(function initTheme(){
+  let t="dark"; try{ t=localStorage.getItem("cd_theme")||"dark"; }catch(e){}
+  applyTheme(t);
+})();
+
+function syncButtons(){
+  $("#btnLog").classList.toggle("on", S.logY);
+  $("#btnDiff").classList.toggle("on", S.diff);
+  $("#btnLive").classList.toggle("on", S.live);
+  $("#c2Diff").classList.toggle("on", S.c2mode==="diff");
+  $("#c2Val").classList.toggle("on", S.c2mode==="val");
+}
+
+$("#btnTheme").onclick = ()=> applyTheme(document.documentElement.dataset.theme==="dark"?"light":"dark");
+$("#c2Diff").onclick = ()=>{ S.c2mode="diff"; S.c2view=null; redraw(); };
+$("#c2Val").onclick  = ()=>{ S.c2mode="val";  S.c2view=null; redraw(); };
+$("#filter").oninput = ()=> renderSidebar();
+$("#btnLive").onclick = ()=>{ S.live=!S.live; $("#btnLive").classList.toggle("on",S.live); if(S.live) tick(); };
+$("#btnLog").onclick = ()=>{ S.logY=!S.logY; $("#btnLog").classList.toggle("on",S.logY); redraw(); };
+$("#btnDiff").onclick = ()=>{ S.diff=!S.diff; $("#btnDiff").classList.toggle("on",S.diff); redraw(); };
+$("#btnRefresh").onclick = ()=> tick();
+$("#btnBase").onclick = ()=>{
+  const sel=selList().filter(n=>(S.runs[n]&&(S.runs[n].points||0)>0));
+  if(!sel.length) return;
+  const i = sel.indexOf(S.baseline);
+  S.baseline = sel[(i+1)%sel.length];
+  renderBaseBtn(); redraw();
+};
+$("#smooth").oninput = e=>{ setSmooth(+e.target.value, true); };
+$("#interval").oninput = e=>{ S.interval=+e.target.value; $("#ivLabel").textContent=S.interval+"s"; };
+$("#xaxis").onchange = e=>{ S.xaxis=e.target.value; S.c1view=null; S.seriesKey=""; refreshSeries(); };
+$("#bAll").onclick = ()=>{ S.order.forEach(n=>S.sel.add(n)); S.baseline = pickBaseline(); afterSelectionChange(); };
+$("#bRecent").onclick = ()=>{ S.sel = new Set(recentRuns()); S.baseline = pickBaseline(); afterSelectionChange(); };
+$("#bNone").onclick = ()=>{ S.sel.clear(); S.baseline=null; afterSelectionChange(); };
+$("#bInv").onclick = ()=>{ const s=new Set(); S.order.forEach(n=>{ if(!S.sel.has(n)) s.add(n); }); S.sel=s; if(!S.sel.has(S.baseline)) S.baseline=pickBaseline(); afterSelectionChange(); };
+$("#bBest").onclick = ()=>{
+  const arr=S.order.filter(n=>S.runs[n].best_val_ppl!=null).sort((a,b)=>S.runs[a].best_val_ppl-S.runs[b].best_val_ppl);
+  S.sel=new Set(arr.slice(0,3));
+  S.baseline = arr[0]||pickBaseline();
+  afterSelectionChange();
+};
+$("#bSort").onclick = ()=>{
+  S.order.sort((a,b)=>{ const x=S.runs[a].best_val_ppl, y=S.runs[b].best_val_ppl;
+    if(x==null) return 1; if(y==null) return -1; return x-y; });
+  renderSidebar();
+};
+let _rt=null;
+window.addEventListener("resize", ()=>{ clearTimeout(_rt); _rt=setTimeout(()=>redraw(),150); });
+
+/* ================= boot ================= */
+S.view={c1:null,c2:null};
+window.DASH = {S, redraw, refreshSeries, refreshRuns, refreshEpochs, tick, colorOf, selList};
+(async function(){
+  renderTabs();
+  (function initDefaults(){                 // 让 S 的默认值与控件初值一致（直播场景无法手动调）
+    const win = posToWin(+$("#smooth").value);
+    S.smoothWin = win; S.smooth = winToW(win);
+    $("#smLabel").textContent = smoothLabel(win);
+    S.interval = +$("#interval").value;
+    $("#ivLabel").textContent = S.interval + "s";
+    syncButtons();
+  })();
+  await refreshRuns();
+  await refreshSeries();
+  await refreshEpochs();
+  startSSE();
+  // 兜底轮询：跟着「间隔」走（SSE 才是主通道，这里只是万一 SSE 断了也不至于停更）
+  (async function fallbackLoop(){
+    while(true){
+      await new Promise(r => setTimeout(r, Math.max(1000, S.interval*1000)));
+      if(S.live) tick();
+    }
+  })();
+})();
+</script>
+</body>
+</html>
