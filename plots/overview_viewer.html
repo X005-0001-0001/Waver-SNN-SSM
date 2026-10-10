@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>训练 overview 实时监视</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0d1117}
+  #vw{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  #img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;
+       box-shadow:0 0 30px rgba(0,0,0,.6)}
+  #st{position:fixed;top:6px;right:10px;color:#58a6ff;font:12px monospace;z-index:9;
+      background:rgba(0,0,0,.5);padding:2px 8px;border-radius:4px}
+</style>
+</head>
+<body>
+<div id="st" title="右键点击图可查看/刷新"></div>
+<div id="vw"><img id="img" alt="overview"></div>
+<script>
+const IMG='overview.png';
+const img=document.getElementById('img');
+const st=document.getElementById('st');
+let n=0;
+function bump(){
+  img.src=IMG+'?t='+Date.now()+'&n='+(n++);
+  st.textContent=new Date().toLocaleTimeString()+'  (点图刷新)';
+}
+let ok=0,fail=0;
+img.onload=()=>{ok++;bump();};
+img.onerror=()=>{fail++;st.textContent='overview.png 未找到，重试中... ('+fail+')';setTimeout(bump,2000);};
+// 首次加载 + 之后每 3 秒强制刷新
+bump();
+setInterval(()=>{ // 用新 Image 探测，成功才替换
+  const t=new Image();
+  t.onload=()=>{img.src=IMG+'?t='+Date.now()+'&n='+(n++);st.textContent=new Date().toLocaleTimeString();};
+  t.onerror=()=>{st.textContent='overview.png 未找到，重试中...';};
+  t.src=IMG+'?t='+Date.now();
+},3000);
+</script>
+</body>
+</html>
