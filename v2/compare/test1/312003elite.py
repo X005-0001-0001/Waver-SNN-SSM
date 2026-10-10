@@ -39,14 +39,14 @@ except ImportError:
 # ------------------------------------------------------------
 # 配置参数（仅保留核心训练与推理）
 # ------------------------------------------------------------
-VOCAB_SIZE = 40000
-HIDDEN_SIZE =512
-NUM_LAYERS = 5
+VOCAB_SIZE = 10000
+HIDDEN_SIZE = 256
+NUM_LAYERS = 4
 LEARNING_RATE = 0.001
 WEIGHT_DECAY = 0.01
 GRAD_CLIP_NORM = 5.0
-BATCH_SIZE = 1
-EPOCHS = 1
+BATCH_SIZE = 50
+EPOCHS = 5
 LOG_INTERVAL = 1
 TEMPERATURE = 0.7
 TOP_P = 0.9
@@ -62,6 +62,7 @@ PIN_MEMORY = DEVICE.type == 'cuda'  # CPU 上自动关闭
 
 MAX_SEQ_LEN = 1024
 EARLY_STOP_PATIENCE = 3
+NUM_WORKERS = 0                    # DataLoader 进程数；0=主进程(Windows 最稳)，>0 启用并行 tokenize（配合 persistent_workers）
 
 
 # ============================================================
@@ -106,7 +107,7 @@ STABILITY_LAMBDA = 1e-6          # 惩罚系数
 #   K=2 (STATE_DIM=4)  ← 默认（与 182 ultra 严格同构）
 #   K=4 (STATE_DIM=8)  ← 更高动力学容量（原 MIMO 思路的轻量替代，不引入 block 结构，仅加通道）
 #   注意：增大 K 会让 coupling_log 维度 = K*(K-1)//2 增长，参数量随之增加。
-STATE_DIM = 6
+STATE_DIM = 4
 # ============================================================
 # 全局摘要器配置（写入端 + 读取端统一挂载）
 # ============================================================
@@ -117,10 +118,11 @@ STATE_DIM = 6
 SUMMARY_TYPE = 'linear_attention'
 
 # 线性注意力摘要器参数
-SUMMARY_ATTN_DK = 128          # key/query 投影维度
+SUMMARY_ATTN_DK = 64          # key/query 投影维度
+SUMMARY_CHUNK = 128            # 分块大小（P1-7）：分块线性注意力，避免物化 (B,T,dk,D) 大张量；0=回退 cumsum
 
 # mini_wave 摘要器参数
-MINI_HIDDEN = 64              # 迷你隐藏维度
+MINI_HIDDEN = 128              # 迷你隐藏维度
 MINI_NUM_LAYERS = 1           # 迷你层数
 MINI_STATE_DIM = 2            # 迷你状态维度，必须偶数，K = MINI_STATE_DIM // 2
 
@@ -128,7 +130,7 @@ MINI_STATE_DIM = 2            # 迷你状态维度，必须偶数，K = MINI_STA
 # ============================================================
 # 余弦退火重启调度器参数
 # ============================================================
-COSINE_T_0 = 10000            # 第一个余弦周期的步数（步数到达后重启学习率）
+COSINE_T_0 = 1000            # 第一个余弦周期的步数（步数到达后重启学习率）
 COSINE_T_MULT = 1            # 每次重启后周期倍数（1=固定周期，2=周期翻倍）
 COSINE_ETA_MIN = 1e-6        # 学习率下限（余弦退火的最低点，防止学习率归零）
 
@@ -169,14 +171,14 @@ USE_RESIDUAL = True
 # ============================================================
 # MoE-FFN 配置（默认关闭，关闭时与 ultra 严格等价）
 # ============================================================
-MOE_ENABLED = True            # True=每层 SSM 后接 MoE-FFN（新增容量，非对照基线）
-MOE_NUM_EXPERTS = 20            # 专家数 E
+MOE_ENABLED = False            # True=每层 SSM 后接 MoE-FFN（新增容量，非对照基线）
+MOE_NUM_EXPERTS = 8            # 专家数 E
 MOE_TOP_K = 2                  # 每个 token 激活的专家数
-MOE_EXPERT_HIDDEN = 10240       # SwiGLU 专家中间维度
+MOE_EXPERT_HIDDEN = 1024       # SwiGLU 专家中间维度
 MOE_AUX_LOSS_COEF = 0.01       # 路由负载均衡辅助损失系数
 MOE_RESIDUAL = True            # MoE 输出加残差（并接后置 RMSNorm）
 # 专家卸载：'off'=全驻 GPU / 'on'=全驻 CPU 按需搬移 / 'auto'=按显存估算自动决定
-MOE_OFFLOAD = 'on'
+MOE_OFFLOAD = 'auto'
 MOE_OFFLOAD_AUTO_RATIO = 0.25  # auto：专家权重估算字节数 > GPU 总显存×此比例则卸载
 # 专家权重量化：None | 'fp8_e4m3'（E4M3 STE 训练量化） | 'nvfp4'（E2M1 4bit 推理量化）
 MOE_EXPERT_QUANT = None
@@ -191,6 +193,14 @@ MOE_EXPERT_WNORM = True
 AMP_FP32_GATE_CONV = True      # 门控因果卷积
 AMP_FP32_SSM_SCAN = True       # 并行扫描 + step 串行递推（矩阵指数由 Omega 显式 fp32 天然锁定）
 AMP_FP32_SUMMARIZER = True     # 摘要器状态累积（LinearAttention/MiniWave）
+USE_EIG_SCAN = True            # Ω 特征分解→对角复标量扫描（P1-6）；False=回退 matrix_exp 路径（对照）
+EIG_MIN_GAP = 2e-2            # P1-6：特征值最小间隙下限（复审实测）。非正规近亏损时 eigvals 反向按 ~1/gap
+                               #   放大（gap<1e-3→千倍+；~1e-2→仍数十倍），正向 exp(δΩ)=P·e^{δΛ}P⁻¹ 也失真；
+                               #   健康态间隙地板 ≈0.025。任一层任一通道 gap 低于此 → 该层回退 matrix_exp。
+USE_CUDA_GRAPH_DECODE = False  # P2-9：逐 token 解码步抓成 CUDA Graph（消除每步几十次 kernel 启动开销）。
+                               #   仅在 CUDA + 非 MoE 下生效（MoE 的 for e in ...: hit.any() 早退是数据相关控制流，不可捕获）；
+                               #   抓图失败自动回退普通 step。默认 False，确认稳定后再开。
+CUDA_GRAPH_WARMUP = 3          # 抓图前预热步数（让 cuBLAS/cuSOLVER workspace 在图外预分配）
 
 # ============================================================
 # 独立量化开关（FP8 训练 / NVFP4 量化）—— 供 FP8Linear 与工具函数使用
@@ -454,10 +464,8 @@ def _blelloch_scan(A_flat: torch.Tensor, b_flat: torch.Tensor) -> torch.Tensor:
     dtype = A_flat.dtype
     real_dtype = torch.float32 if dtype in (torch.float32, torch.complex64) else torch.float64
 
-    # 填充到严格大于 T 的 2 次幂
+    # 填充到 ≥ T 的 2 次幂（T 已是 2 的幂时不额外填充，扫描算量/显存减半，数值逐位不变）
     next_pow2 = 1 << (T - 1).bit_length()
-    if next_pow2 <= T:
-        next_pow2 = T * 2
     pad_len = next_pow2 - T
     eye = torch.eye(K, dtype=real_dtype, device=device).unsqueeze(0).unsqueeze(0).to(dtype)
     A_pad = torch.cat([A_flat, eye.expand(B_flat, pad_len, K, K)], dim=1)
@@ -563,6 +571,104 @@ class BlellochScanFn(torch.autograd.Function):
 
 def parallel_block_scan(A: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return BlellochScanFn.apply(A, b)
+
+
+# ------------------------------------------------------------
+# 复标量关联前缀扫描（P1-6：Ω 特征分解后的对角复递推）
+#   z_t = a_t ⊙ z_{t-1} + b_t，a_t/b_t 为 (B,T,K) 复数；比矩阵版省 6× 带宽（无 6×6 矩阵）
+# ------------------------------------------------------------
+def _blelloch_scan_scalar(A_flat: torch.Tensor, b_flat: torch.Tensor):
+    """复标量 Blelloch 扫描（纯函数）：h_t = a_t·h_{t-1} + b_t（elementwise 复数乘）。
+    A_flat: (B, T, K) complex   b_flat: (B, T, K) complex  ->  (h, b_excl)。"""
+    B_flat, T, K = A_flat.shape
+    device = A_flat.device
+    dtype = A_flat.dtype
+    next_pow2 = 1 << (T - 1).bit_length()   # ≥ T（T=2^k 时不填充）
+    pad_len = next_pow2 - T
+    one = torch.ones((), dtype=dtype, device=device)
+    A_pad = torch.cat([A_flat, one.expand(B_flat, pad_len, K)], dim=1)
+    b_pad = torch.cat([b_flat, torch.zeros(B_flat, pad_len, K, dtype=dtype, device=device)], dim=1)
+    T_padded = next_pow2
+    max_level = T_padded.bit_length() - 1
+
+    # Up-sweep
+    for level in range(max_level):
+        step = 1 << level
+        left = torch.arange(step - 1, T_padded, 2 * step, device=device)
+        if left.numel() == 0:
+            continue
+        right = left + step
+        A_new = A_pad[:, right] * A_pad[:, left]
+        b_new = A_pad[:, right] * b_pad[:, left] + b_pad[:, right]
+        A_pad[:, right] = A_new
+        b_pad[:, right] = b_new
+
+    A_pad[:, -1] = one
+    b_pad[:, -1] = 0.0
+
+    # Down-sweep
+    for level in range(max_level - 1, -1, -1):
+        step = 1 << level
+        left = torch.arange(step - 1, T_padded, 2 * step, device=device)
+        if left.numel() == 0:
+            continue
+        right = left + step
+        temp_A = A_pad[:, left].clone()
+        temp_b = b_pad[:, left].clone()
+        A_pad[:, left] = A_pad[:, right]
+        b_pad[:, left] = b_pad[:, right]
+        A_new = temp_A * A_pad[:, right]
+        b_new = temp_A * b_pad[:, right] + temp_b
+        A_pad[:, right] = A_new
+        b_pad[:, right] = b_new
+
+    b_excl = b_pad[:, :T].contiguous()
+    h = A_flat * b_excl + b_flat
+    return h, b_excl
+
+
+class ScalarScanFn(torch.autograd.Function):
+    """复标量扫描的 autograd：grad_a = dh·conj(h_prev)，dh 递推用 conj(a)。"""
+    @staticmethod
+    def forward(ctx, A, b):
+        orig_shape = A.shape
+        *batch_dims, T, K = orig_shape
+        A_flat = A.reshape(-1, T, K).clone()
+        b_flat = b.reshape(-1, T, K).clone()
+        B_flat = A_flat.shape[0]
+        h_flat, b_excl = _blelloch_scan_scalar(A_flat, b_flat)
+        h = h_flat.view(*batch_dims, T, K)
+        ctx.save_for_backward(A_flat, b_excl)
+        ctx._T = T
+        ctx._K = K
+        ctx._batch_dims = batch_dims
+        ctx._B_flat = B_flat
+        return h
+
+    @staticmethod
+    def backward(ctx, grad_h):
+        A_orig, b_excl = ctx.saved_tensors
+        T, K = ctx._T, ctx._K
+        B_flat = ctx._B_flat
+        device = A_orig.device
+        grad_h_flat = grad_h.reshape(B_flat, T, K)
+        with torch.no_grad():
+            h_prev = b_excl
+            A_rev = torch.flip(A_orig, dims=[1]).conj()
+            grad_rev = torch.flip(grad_h_flat, dims=[1])
+            one = torch.ones((), dtype=A_orig.dtype, device=device)
+            A_scan = torch.cat([one.expand(B_flat, 1, K), A_rev[:, :-1]], dim=1)
+            D_rev, _ = _blelloch_scan_scalar(A_scan, grad_rev)
+            dh_total = torch.flip(D_rev, dims=[1]).contiguous()
+        grad_b = dh_total
+        grad_A = dh_total * h_prev.conj()
+        grad_A = grad_A.view(*ctx._batch_dims, T, K)
+        grad_b = grad_b.view(*ctx._batch_dims, T, K)
+        return grad_A, grad_b
+
+
+def parallel_scalar_scan(A: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    return ScalarScanFn.apply(A, b)
 
 # ------------------------------------------------------------
 # 对角复数波神经元层（实值化：2×2 块同构，无 complex 中间量；子通道间耦合 KxK 斜埃尔米特）
@@ -675,8 +781,39 @@ class ParallelComplexWaveLayer(nn.Module):
         # delta_linear 幅度可学习（进 no_decay）：指数耦合是"衰减耦合"（Ω 实部 -ν<0），
         #   delta 大 → exp(-δν) 更小 → 更快遗忘，不会爆炸，无需冻结
 
+    def _compute_eig(self, nu, theta, M):
+        """Ω_c = M + diag(-ν+iθ) 的特征分解（P1-6）。返回 (lam, P, P_inv)，对角时 P=None 表单位基。
+        eig 失败/病态时返回 None → 调用方回退 matrix_exp 路径。"""
+        D, K = nu.shape
+        device = nu.device
+        if self.disable_coupling or K == 1:
+            # 对角（无耦合 / K=1）：λ = -ν+iθ，P=I（免 eig）
+            lam = torch.complex(-nu, theta)               # (D,K)
+            return lam, None, None
+        Omega_c = torch.complex(M - torch.diag_embed(nu), torch.diag_embed(theta))  # (D,K,K)
+        try:
+            # P/P_inv 用 detach（复特征向量相位不定 e^{iφ}，梯度 ill-defined）；λ 用 eigvals（特征值梯度清晰）
+            with torch.no_grad():
+                _, P = torch.linalg.eig(Omega_c.detach())
+                P_inv = torch.linalg.inv(P)
+            lam = torch.linalg.eigvals(Omega_c)           # (D,K) 有梯度（对 Ω_c → nu/theta/coupling）
+        except Exception:
+            return None
+        if not (torch.isfinite(lam).all() and torch.isfinite(P).all() and torch.isfinite(P_inv).all()):
+            return None
+        if P_inv.abs().max().item() > 1e6:                # 病态（近亏损）→ 回退
+            return None
+        # 特征值最小间隙监控：近亏损（即使 |P_inv| 不大）会让 eigvals 反向 ~1/gap 放大 + 正向失真
+        with torch.no_grad():
+            _dg = (lam[:, :, None] - lam[:, None, :]).abs()          # (D,K,K) 两两差
+            _dg = _dg + torch.eye(K, dtype=_dg.dtype, device=lam.device) * 1e30   # 屏蔽自差
+            if _dg.amin(dim=(-1, -2)).min().item() < EIG_MIN_GAP:
+                return None                                          # 该层整体回退 matrix_exp
+        return lam, P, P_inv
+
     def forward(self, x: torch.Tensor,
-                time_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                time_mask: Optional[torch.Tensor] = None,
+                return_state: bool = False) -> torch.Tensor:
         B, T, D = x.shape
         K = self.state_dim // 2
         S = self.state_dim                            # 实值状态维度 = 2K（实虚交替）
@@ -699,11 +836,15 @@ class ParallelComplexWaveLayer(nn.Module):
         I_gated_norm = I_gated / I_rms
         # =========================================================
 
+        summarizer_state = None
         if self.disable_summarizer:
             delta_raw = self.delta_linear(I_gated_norm)
             B_raw = self.B_linear(I_gated_norm)
         else:
-            g = self.summarizer(I_gated_norm)                        # (B, T, D)
+            if return_state:
+                g, summarizer_state = self.summarizer(I_gated_norm, return_state=True)
+            else:
+                g = self.summarizer(I_gated_norm)                    # (B, T, D)
             x_with_summary = torch.cat([I_gated_norm, g], dim=-1)    # (B, T, 2D)
             delta_raw = self.delta_linear(x_with_summary)
             B_raw = self.B_linear(x_with_summary)
@@ -722,17 +863,8 @@ class ParallelComplexWaveLayer(nn.Module):
         nu = torch.exp(self.nu_log)                      # (D, K) 漏水速率，恒 > 0
         theta = torch.exp(self.theta_raw)                               # (D, K) 相位（RoPE 等价）
 
-        Md = M - torch.diag_embed(nu)                    # (D, K, K) 实-实 & 虚-虚 对角块
-        Omega = torch.zeros(D, S, S, device=device, dtype=torch.float32)
-        Omega[:, 0::2, 0::2] = Md
-        Omega[:, 1::2, 1::2] = Md
-        thd = torch.diag_embed(theta)
-        Omega[:, 0::2, 1::2] = -thd                      # 实-虚 = -diag(θ)
-        Omega[:, 1::2, 0::2] = thd                       # 虚-实 = +diag(θ)
-        Omega = Omega.unsqueeze(0).unsqueeze(0)          # (1, 1, D, S, S)
-
-        delta_rep = delta.repeat_interleave(2, dim=-1)   # (B,T,D,S) 每通道复制到实虚两行
-        A_disc = torch.linalg.matrix_exp(delta_rep.unsqueeze(-1) * Omega)   # (B,T,D,S,S) 实值
+        # ---- Ω 特征分解 → 对角复扫描（P1-6）：exp(δΩ) = P·diag(exp(δλ))·P⁻¹ ----
+        eig = self._compute_eig(nu, theta, M) if USE_EIG_SCAN else None
 
         # 精确 ZOH 注入（纯实值闭式）：w = (e^{δγ}-1)/γ，γ = -ν + iθ
         #   Re(w) = (ν(1-e·c) + θ·e·s) / (ν²+θ²)，Im(w) = (θ(1-e·c) - ν·e·s) / (ν²+θ²)
@@ -752,24 +884,60 @@ class ParallelComplexWaveLayer(nn.Module):
         B_disc_imag = (B_real * b + B_imag * a) * B_scale
 
         c_in = I_gated_norm.unsqueeze(-1)                # (B,T,D,1)
-        b_input = torch.zeros(B, T, D, S, device=device, dtype=torch.float32)
-        b_input[..., 0::2] = B_disc_real * c_in
-        b_input[..., 1::2] = B_disc_imag * c_in
 
-        if time_mask is not None:
-            mask_exp = time_mask.float().to(A_disc.dtype).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            eye = torch.eye(S, dtype=A_disc.dtype, device=device).view(1,1,1,S,S)
-            A_disc = A_disc * mask_exp + (1.0 - mask_exp) * eye
-            b_input = b_input * mask_exp.squeeze(-1)
-
-        # ---- 合并 B 和 D 维度，调用并行扫描（fp32 保持 SSM 递推稳定） ----
-        B_orig, T_len, D_orig, S_ = A_disc.shape[0], A_disc.shape[1], A_disc.shape[2], A_disc.shape[-1]
-        A_flat = A_disc.permute(0, 2, 1, 3, 4).reshape(B_orig * D_orig, T_len, S_, S_)
-        b_flat = b_input.permute(0, 2, 1, 3).reshape(B_orig * D_orig, T_len, S_)
-        with torch.amp.autocast(device_type=device.type, enabled=(not AMP_FP32_SSM_SCAN)):
-            h_flat = parallel_block_scan(A_flat, b_flat)
-        h = h_flat.view(B_orig, D_orig, T_len, S_).permute(0, 2, 1, 3)   # (B, T, D, S) 实值（实虚交替）
-        h = torch.nan_to_num(h, nan=0.0)
+        if eig is not None:
+            # ---- eig 对角复标量扫描：z_t = exp(δλ)·z_{t-1} + P⁻¹b_t，h = Pz ----
+            lam, P, P_inv = eig
+            a_t = torch.exp(delta.to(torch.complex64) * lam)               # (B,T,D,K) complex
+            b_c = torch.complex(B_disc_real * c_in, B_disc_imag * c_in)    # (B,T,D,K) complex
+            if P is not None:
+                b_t = torch.einsum('dkj,btdj->btdk', P_inv, b_c)           # 换基 z = P⁻¹h（收缩 h 通道 j）
+            else:
+                b_t = b_c                                                  # 对角：无需换基
+            if time_mask is not None:
+                m = time_mask.float().unsqueeze(-1).unsqueeze(-1)          # (B,T,1,1)
+                a_t = a_t * m + (1.0 - m)
+                b_t = b_t * m
+            a_flat = a_t.permute(0, 2, 1, 3).reshape(B * D, T, K)          # (B*D,T,K) 合并 B,D 维
+            b_flat = b_t.permute(0, 2, 1, 3).reshape(B * D, T, K)
+            with torch.amp.autocast(device_type=device.type, enabled=(not AMP_FP32_SSM_SCAN)):
+                z_flat = parallel_scalar_scan(a_flat, b_flat)             # (B*D,T,K) complex
+            z = z_flat.view(B, D, T, K).permute(0, 2, 1, 3)               # (B,T,D,K)
+            z = torch.complex(torch.nan_to_num(z.real, nan=0.0), torch.nan_to_num(z.imag, nan=0.0))
+            if P is not None:
+                h_c = torch.einsum('dik,btdk->btdi', P, z)                 # 回原基 h = Pz（收缩 z 通道 k）
+            else:
+                h_c = z
+            h = torch.view_as_real(h_c).flatten(-2)                        # (B,T,D,2K) 实虚交替
+            T_len = T
+            D_orig = D
+        else:
+            # ---- legacy fallback：matrix_exp + 矩阵扫描（eig 失败/关闭时）----
+            Md = M - torch.diag_embed(nu)
+            Omega = torch.zeros(D, S, S, device=device, dtype=torch.float32)
+            Omega[:, 0::2, 0::2] = Md
+            Omega[:, 1::2, 1::2] = Md
+            thd = torch.diag_embed(theta)
+            Omega[:, 0::2, 1::2] = -thd
+            Omega[:, 1::2, 0::2] = thd
+            Omega = Omega.unsqueeze(0).unsqueeze(0)
+            delta_rep = delta.repeat_interleave(2, dim=-1)
+            A_disc = torch.linalg.matrix_exp(delta_rep.unsqueeze(-1) * Omega)
+            b_input = torch.zeros(B, T, D, S, device=device, dtype=torch.float32)
+            b_input[..., 0::2] = B_disc_real * c_in
+            b_input[..., 1::2] = B_disc_imag * c_in
+            if time_mask is not None:
+                mask_exp = time_mask.float().to(A_disc.dtype).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                eye = torch.eye(S, dtype=A_disc.dtype, device=device).view(1,1,1,S,S)
+                A_disc = A_disc * mask_exp + (1.0 - mask_exp) * eye
+                b_input = b_input * mask_exp.squeeze(-1)
+            B_orig, T_len, D_orig, S_ = A_disc.shape[0], A_disc.shape[1], A_disc.shape[2], A_disc.shape[-1]
+            A_flat = A_disc.permute(0, 2, 1, 3, 4).reshape(B_orig * D_orig, T_len, S_, S_)
+            b_flat = b_input.permute(0, 2, 1, 3).reshape(B_orig * D_orig, T_len, S_)
+            with torch.amp.autocast(device_type=device.type, enabled=(not AMP_FP32_SSM_SCAN)):
+                h_flat = parallel_block_scan(A_flat, b_flat)
+            h = h_flat.view(B_orig, D_orig, T_len, S_).permute(0, 2, 1, 3)
+            h = torch.nan_to_num(h, nan=0.0)
 
         if self.disable_summarizer:
             # ========== EMA 替代因果累积均值 ==========
@@ -817,15 +985,45 @@ class ParallelComplexWaveLayer(nn.Module):
         # 稳定性惩罚（仅训练时计算）
         stab_penalty = torch.zeros(1, device=device)
 
+        if return_state:
+            # ---- 构建与 init_state 兼容的末状态（P1-8 并行 prefill：供 prefill → step 无缝续推）----
+            ks = self.gate_conv.kernel_size[0]
+            conv_len = ks - 1
+            if T >= conv_len:
+                conv = I[0, T - conv_len:, :].float()                    # (ks-1, D) 末 conv_len 个 I 值
+            else:
+                conv = torch.cat([torch.zeros(conv_len - T, D, device=device, dtype=torch.float32),
+                                  I[0].float()], dim=0)
+            state = {
+                'h': h[0, -1].contiguous().float(),                      # (D,S) 实值（legacy 回退用）
+                'z': z[0, -1].contiguous() if eig is not None else
+                     torch.zeros(D, K, dtype=torch.complex64, device=device),  # (D,K) eigenbasis
+                'conv': conv,
+            }
+            if eig is not None:
+                state['eig'] = eig                                       # 缓存 lam/P/P_inv，step 复用
+            if self.disable_summarizer:
+                state['h_ema'] = h_ema[0, -1].contiguous().float()       # (D,S) 实值
+            else:
+                state['summarizer'] = summarizer_state
+            return wave_out, stab_penalty, state
+
         return wave_out, stab_penalty
 
+    def forward_prefill(self, x, time_mask=None):
+        """并行 prefill（P1-8）：一次前向并行算出全部末状态，返回 (wave_out, state)。与逐 token step 严格等价。"""
+        out, _, state = self.forward(x, time_mask=time_mask, return_state=True)
+        return out, state
+
     def init_state(self, device):
-        """初始化递归推理状态：主递推 h（实值 2K 维，实虚交替）；摘要模式额外持有摘要器状态，朴素 170 模式持有 EMA 状态。"""
+        """初始化递归推理状态：主递推 h（实值 2K 维，实虚交替）+ z（eig 路径的 eigenbasis 复状态）；摘要模式额外持有摘要器状态。"""
         D = self.output_dim
         S = self.state_dim
+        K = S // 2
         ks = self.gate_conv.kernel_size[0]
         state = {
             'h': torch.zeros(D, S, dtype=torch.float32, device=device),
+            'z': torch.zeros(D, K, dtype=torch.complex64, device=device),
             'conv': torch.zeros(ks - 1, D, dtype=torch.float32, device=device),
         }
         if self.disable_summarizer:
@@ -846,7 +1044,8 @@ class ParallelComplexWaveLayer(nn.Module):
         w = self.gate_conv.weight[0, 0]
         hist = torch.cat([state['conv'], I_t.unsqueeze(0)], dim=0)  # [I_{t-4},...,I_t]
         local_bias = (w.unsqueeze(1) * hist).sum(0)                  # w0*I_{t-4}+...+w4*I_t
-        state['conv'] = torch.cat([state['conv'][1:], I_t.unsqueeze(0)], dim=0)
+        # 原地滚动（P2-9）：保持 state['conv'] 存储地址不变，CUDA Graph 回放才能读到最新历史
+        state['conv'].copy_(torch.cat([state['conv'][1:], I_t.unsqueeze(0)], dim=0))
 
         gate = self.gate_linear(I_t) + local_bias
         I_gated = I_t * gate
@@ -874,15 +1073,6 @@ class ParallelComplexWaveLayer(nn.Module):
         M = M - M.transpose(-1, -2)
 
         Md = M - torch.diag_embed(nu)                     # (D, K, K)
-        Omega = torch.zeros(D, S, S, device=device, dtype=torch.float32)
-        Omega[:, 0::2, 0::2] = Md
-        Omega[:, 1::2, 1::2] = Md
-        thd = torch.diag_embed(theta)
-        Omega[:, 0::2, 1::2] = -thd
-        Omega[:, 1::2, 0::2] = thd
-
-        delta_rep = delta.repeat_interleave(2, dim=-1)    # (D, S)
-        A_disc = torch.linalg.matrix_exp(delta_rep.unsqueeze(-1) * Omega)   # (D, S, S)
 
         B_real = B_raw[..., 0].float()                    # (D, K)
         B_imag = B_raw[..., 1].float()
@@ -897,19 +1087,49 @@ class ParallelComplexWaveLayer(nn.Module):
         B_disc_real = (B_real * a - B_imag * b) * B_scale
         B_disc_imag = (B_real * b + B_imag * a) * B_scale
 
-        b_t = torch.zeros(D, S, device=device, dtype=torch.float32)
-        b_t[:, 0::2] = B_disc_real * I_gated_norm.unsqueeze(-1)
-        b_t[:, 1::2] = B_disc_imag * I_gated_norm.unsqueeze(-1)
+        eig = None
+        if USE_EIG_SCAN:
+            if 'eig' not in state:
+                state['eig'] = self._compute_eig(nu, theta, M)   # 生成会话内缓存一次
+            eig = state['eig']
 
-        with torch.amp.autocast(device_type=device.type, enabled=(not AMP_FP32_SSM_SCAN)):
-            h_t = torch.matmul(A_disc, state['h'].unsqueeze(-1)).squeeze(-1) + b_t
-        h_t = torch.nan_to_num(h_t, nan=0.0)
-        state['h'] = h_t
+        if eig is not None:
+            # ---- eig 对角复递推：z = exp(δλ)·z + P⁻¹b，h = Pz ----
+            lam, P, P_inv = eig
+            a_t = torch.exp(delta.to(torch.complex64) * lam)                  # (D,K) complex
+            b_c = torch.complex(B_disc_real * I_gated_norm.unsqueeze(-1),
+                                B_disc_imag * I_gated_norm.unsqueeze(-1))     # (D,K) complex
+            if P is not None:
+                z = a_t * state['z'] + torch.einsum('dkj,dj->dk', P_inv, b_c)   # P⁻¹b_c（收缩 h 通道 j）
+                h_c = torch.einsum('dik,dk->di', P, z)                          # Pz（收缩 z 通道 k）
+            else:
+                z = a_t * state['z'] + b_c
+                h_c = z
+            state['z'].copy_(z)                                                  # 原地（P2-9）
+            h_t = torch.view_as_real(h_c).flatten(-2)                             # (D, 2K) 实虚交替
+            state['h'].copy_(h_t)                                                 # h 恒同步（供 legacy 回退/状态检查）
+        else:
+            # ---- legacy fallback：matrix_exp + 矩阵递推 ----
+            Omega = torch.zeros(D, S, S, device=device, dtype=torch.float32)
+            Omega[:, 0::2, 0::2] = Md
+            Omega[:, 1::2, 1::2] = Md
+            thd = torch.diag_embed(theta)
+            Omega[:, 0::2, 1::2] = -thd
+            Omega[:, 1::2, 0::2] = thd
+            delta_rep = delta.repeat_interleave(2, dim=-1)    # (D, S)
+            A_disc = torch.linalg.matrix_exp(delta_rep.unsqueeze(-1) * Omega)   # (D, S, S)
+            b_t = torch.zeros(D, S, device=device, dtype=torch.float32)
+            b_t[:, 0::2] = B_disc_real * I_gated_norm.unsqueeze(-1)
+            b_t[:, 1::2] = B_disc_imag * I_gated_norm.unsqueeze(-1)
+            with torch.amp.autocast(device_type=device.type, enabled=(not AMP_FP32_SSM_SCAN)):
+                h_t = torch.matmul(A_disc, state['h'].unsqueeze(-1)).squeeze(-1) + b_t
+            h_t = torch.nan_to_num(h_t, nan=0.0)
+            state['h'].copy_(h_t)                                                 # 原地（P2-9）
 
         if self.disable_summarizer:
             beta = F.softplus(self.h_ema_beta)
             h_ema_t = beta * state['h_ema'] + (1.0 - beta) * h_t
-            state['h_ema'] = h_ema_t
+            state['h_ema'].copy_(h_ema_t)                                         # 原地（P2-9）
             mod = (self.summary_linear(h_ema_t.flatten()) + self.input_mod_linear(I_gated_norm)).view(D, K)
         else:
             mod = (self.input_mod_linear(I_gated_norm) + self.global_mod_linear(g_t)).view(D, K)
@@ -937,18 +1157,25 @@ class MeanSummarizer(nn.Module):
         super().__init__()
         self.D = D
 
-    def forward(self, x):
+    def forward(self, x, return_state=False):
         B, T, D = x.shape
         denom = torch.arange(1, T + 1, device=x.device, dtype=x.dtype).view(1, T, 1)
-        return torch.cumsum(x, dim=1) / denom
+        g = torch.cumsum(x, dim=1) / denom
+        if return_state:
+            state = {'sum': x.sum(dim=1)[0].float(),
+                     'count': torch.tensor(float(T), device=x.device, dtype=torch.float32)}
+            return g, state
+        return g
 
     def init_state(self, device, D=None):
         D = D or self.D
-        return {'sum': torch.zeros(D, device=device, dtype=torch.float32), 'count': 0}
+        # count 用 0 维 tensor（而非 Python int）：CUDA Graph 回放时原地自增才能生效（P2-9）
+        return {'sum': torch.zeros(D, device=device, dtype=torch.float32),
+                'count': torch.zeros((), device=device, dtype=torch.float32)}
 
     def step(self, x_t, state):
-        state['sum'] = state['sum'] + x_t
-        state['count'] += 1
+        state['sum'].add_(x_t)                       # 原地累加
+        state['count'].add_(1.0)                     # 原地自增
         return state['sum'] / state['count']
 
 
@@ -969,32 +1196,58 @@ class LinearAttentionSummarizer(nn.Module):
         self.W_V.parametrizations.weight.original0.data = _v.norm(dim=1, keepdim=True)
         nn.init.zeros_(self.W_V.bias)
 
-    def forward(self, x):
+    def forward(self, x, return_state=False):
         B, T, D = x.shape
         k = F.normalize(self.W_K(x), p=2, dim=-1)   # (B,T,dk) 余弦归一化，q·k ∈ [-1,1] 有界
         v = self.W_V(x)       # (B,T,D)
         q = F.normalize(self.W_Q(x), p=2, dim=-1)   # (B,T,dk) 余弦归一化
         # 状态累积与读数锁 fp32（AMP 只作用于投影层），与 step 严格一致
         with torch.amp.autocast(device_type=x.device.type, enabled=(not AMP_FP32_SUMMARIZER)):
-            # cumsum 向量化：S_t = Σ_{s≤t} k_s ⊗ v_s，替代逐 t Python 循环（数学等价、纯 PyTorch、零新依赖）
-            incr = torch.einsum('btd,bte->btde', k, v)
-            if incr.dtype in (torch.float16, torch.bfloat16):
-                incr = incr.float()   # 与 step 的 fp32 累积地板一致（AMP 下 k 经 F.normalize 后恒 fp32）
-            S = torch.cumsum(incr, dim=1)   # (B,T,dk,D) 锁 fp32 累积
-            g = torch.einsum('btd,btde->bte', q, S) / torch.arange(1, T + 1, device=x.device, dtype=S.dtype).view(1, T, 1)
+            # 显式上转 fp32：锁 fp32 时（内层 autocast 关闭）.float() 生效，累积/读数/增量状态全部 fp32；
+            # 不锁时（内层 autocast 开启）白名单算子会按需回到 bf16，行为与开关意图一致。
+            k = k.float(); v = v.float(); q = q.float()
+            C = int(SUMMARY_CHUNK)
+            if C > 0 and T > C:
+                # 分块线性注意力（P1-7）：不物化 (B,T,dk,D) 大张量，块内 tril(qk^T)@v + 块间运行状态，数学严格等价
+                S_run = torch.zeros(B, self.dk, D, device=x.device, dtype=torch.float32)
+                outs = []
+                for c0 in range(0, T, C):
+                    kc = k[:, c0:c0+C]; qc = q[:, c0:c0+C]; vc = v[:, c0:c0+C]
+                    attn = torch.tril(qc @ kc.transpose(-1, -2))     # (B,Cc,Cc) 块内因果
+                    local = attn @ vc                                 # (B,Cc,D) 块内贡献 Σ_{s≤t,同块}(q_t·k_s)v_s
+                    glob = qc @ S_run                                  # (B,Cc,D) 块前累积贡献
+                    S_run = S_run + kc.transpose(-1, -2) @ vc         # 更新运行状态
+                    outs.append(local + glob)
+                g = torch.cat(outs, dim=1) / torch.arange(1, T + 1, device=x.device, dtype=torch.float32).view(1, T, 1)
+            else:
+                # cumsum 向量化：S_t = Σ_{s≤t} k_s ⊗ v_s
+                incr = torch.einsum('btd,bte->btde', k, v)
+                if incr.dtype in (torch.float16, torch.bfloat16):
+                    incr = incr.float()
+                S = torch.cumsum(incr, dim=1)
+                g = torch.einsum('btd,btde->bte', q, S) / torch.arange(1, T + 1, device=x.device, dtype=S.dtype).view(1, T, 1)
+            if return_state:
+                # 必须在 autocast 控制区内计算：控制区外会被外层 bf16 autocast 劫持成 bf16，
+                # 与 init_state/step 的 fp32 运行态 S 冲突（AMP 下 prefill 后首个解码 token matmul dtype 崩溃）
+                S_final = torch.einsum('btd,bte->bde', k, v)[0]      # (dk, D) 全序列累积状态（fp32）
+                state = {'S': S_final.contiguous(), 'count': torch.tensor(float(T), device=x.device, dtype=torch.float32)}
+                return g, state
         return g   # (B,T,D)
 
     def init_state(self, device, D=None):
-        return {'S': torch.zeros(self.dk, self.D, device=device, dtype=torch.float32), 'count': 0}
+        # count 用 0 维 tensor（而非 Python int）：CUDA Graph 回放时原地自增才能生效（P2-9）
+        return {'S': torch.zeros(self.dk, self.D, device=device, dtype=torch.float32),
+                'count': torch.zeros((), device=device, dtype=torch.float32)}
 
     def step(self, x_t, state):
         k_t = F.normalize(self.W_K(x_t), p=2, dim=-1)   # (dk) 余弦归一化
         v_t = self.W_V(x_t)   # (D)
         q_t = F.normalize(self.W_Q(x_t), p=2, dim=-1)   # (dk) 余弦归一化
-        # 状态累积与读数锁 fp32，与 forward 严格一致
+        # 状态累积与读数锁 fp32，与 forward 严格一致（显式上转，不依赖 normalize 的偶然 dtype）
         with torch.amp.autocast(device_type=x_t.device.type, enabled=(not AMP_FP32_SUMMARIZER)):
-            state['S'] = state['S'] + torch.outer(k_t, v_t)
-            state['count'] += 1
+            k_t = k_t.float(); v_t = v_t.float(); q_t = q_t.float()
+            state['S'].add_(torch.outer(k_t, v_t))       # 原地累加
+            state['count'].add_(1.0)                     # 原地自增
             g_t = torch.matmul(q_t, state['S']) / state['count']  # (D)
         return g_t
 
@@ -1028,16 +1281,24 @@ class MiniWaveSummarizer(nn.Module):
         self.output_proj.parametrizations.weight.original0.data = _v.norm(dim=1, keepdim=True)
         nn.init.zeros_(self.output_proj.bias)
 
-    def forward(self, x):
+    def forward(self, x, return_state=False):
         x = self.input_proj(x)
         layer_input = x
+        states = [] if return_state else None
         for i, layer in enumerate(self.layers):
-            out, _ = layer(layer_input)
+            if return_state:
+                out, _, st = layer(layer_input, return_state=True)
+                states.append(st)
+            else:
+                out, _ = layer(layer_input)
             if self.use_residual:
                 out = out + layer_input
             out = self.norms[i](out)
             layer_input = out
-        return self.output_proj(layer_input)
+        out = self.output_proj(layer_input)
+        if return_state:
+            return out, states
+        return out
 
     def init_state(self, device, D=None):
         return [layer.init_state(device) for layer in self.layers]
@@ -1263,8 +1524,14 @@ class TextFileDataset(IterableDataset):
             labels = torch.tensor(np.array(window[1:self.max_seq_len + 1]), dtype=torch.long)
             yield input_ids, labels
 
-def make_collate_fn(pad_id):
-    def collate_fn(batch):
+class Collator:
+    """顶层可 pickle 的批整理器。Windows/macOS 用 spawn 启动 DataLoader worker，
+    要求 collate_fn 可 pickle；局部闭包无法 pickle（num_workers>0 时直接 PicklingError），故用类。"""
+    def __init__(self, pad_id):
+        self.pad_id = pad_id
+
+    def __call__(self, batch):
+        pad_id = self.pad_id
         valid_batch = []
         for inp, lbl in batch:
             try:
@@ -1289,7 +1556,18 @@ def make_collate_fn(pad_id):
             padded_labels.append(lbl)
             attention_masks.append(mask)
         return torch.stack(padded_inputs), torch.stack(padded_labels), torch.stack(attention_masks)
-    return collate_fn
+
+
+def make_collate_fn(pad_id):
+    # 返回顶层类实例（可 pickle），保持原调用接口不变
+    return Collator(pad_id)
+
+
+def _seed_worker(worker_id):
+    """DataLoader worker 种子初始化（顶层函数以兼容 spawn pickle）。"""
+    random.seed(42 + worker_id)
+    np.random.seed(42 + worker_id)
+    torch.manual_seed(42 + worker_id)
 
 # ------------------------------------------------------------
 # MoE-FFN（SwiGLU 专家 + Top-K 软路由 + 专家卸载）与量化工具
@@ -1455,9 +1733,9 @@ def clip_grad_(parameters, max_norm: float):
     parameters = list(parameters)  # generator 转 list，避免二次迭代后变空
     devices = {p.grad.device for p in parameters if p.grad is not None}
     if len(devices) > 1:
-        clip_grad_mixed(parameters, max_norm)
+        return clip_grad_mixed(parameters, max_norm)
     else:
-        torch.nn.utils.clip_grad_norm_(parameters, max_norm)
+        return float(torch.nn.utils.clip_grad_norm_(parameters, max_norm))
 
 
 class MoEFFN(nn.Module):
@@ -1471,7 +1749,7 @@ class MoEFFN(nn.Module):
 
     def __init__(self, dim, num_experts, top_k, expert_hidden, offload=False, expert_quant=None):
         super().__init__()
-        if expert_quant == 'nvfp4':
+        if expert_quant in ('nvfp4', 'bf16'):
             offload = False
         self.dim = dim
         self.num_experts = num_experts
@@ -1492,8 +1770,19 @@ class MoEFFN(nn.Module):
         self.w_up_scale = nn.Parameter(torch.ones(num_experts, device=dev))
         self.w_down_scale = nn.Parameter(torch.ones(num_experts, device=dev))
         self._init_experts()
+        # 独立 H2D 拷贝流（P0-4）：offload 时专家权重在 copy engine 上异步搬运，与默认流的计算重叠
+        self._copy_stream = torch.cuda.Stream() if (offload and torch.cuda.is_available()) else None
+        self._copy_event = None
+        if offload and torch.cuda.is_available():
+            # pinned memory：offload 时 H2D 带宽从 ~3GB/s 升到 ~10GB/s（非阻塞拷贝的前置条件）
+            for _name in self._weight_names + self._bias_names + ('w_gate_scale', 'w_up_scale', 'w_down_scale'):
+                _p = getattr(self, _name, None)
+                if _p is not None:
+                    _p.data = _p.data.pin_memory()
         if expert_quant == 'nvfp4':
             self.pack_nvfp4()
+        elif expert_quant == 'bf16':
+            self.pack_bf16()
 
     def _init_experts(self):
         std = (self.dim * self.expert_hidden) ** -0.5
@@ -1538,6 +1827,23 @@ class MoEFFN(nn.Module):
             if scale_p is not None:
                 setattr(self, name + '_scale', None)
 
+    def pack_bf16(self):
+        """推理用 bf16 常驻打包（P2-10）：专家权重整体转 bf16 buffer，释放 fp32 主权重（2× 压缩，零反量化开销）。"""
+        if self.expert_quant != 'bf16':
+            return
+        for name in self._weight_names:
+            p = getattr(self, name)
+            if p is None:
+                continue
+            scale_p = getattr(self, name + '_scale') if MOE_EXPERT_WNORM else None
+            w = p.detach()
+            if scale_p is not None:
+                w = w * scale_p.detach().unsqueeze(-1).unsqueeze(-1)   # weight_norm 恢复实际权重
+            self.register_buffer(f'{name}_bf16', w.to(torch.bfloat16))
+            setattr(self, name, None)
+            if scale_p is not None:
+                setattr(self, name + '_scale', None)
+
     # ---------- 专家取参 ----------
     def _expert_mats(self, e, device):
         if self.expert_quant == 'nvfp4':
@@ -1552,13 +1858,22 @@ class MoEFFN(nn.Module):
             bu = self.b_up[e].to(device)
             bd = self.b_down[e].to(device)
             return wg, wu, wd, bg, bu, bd
-        if self.offload:
-            wg = self.w_gate[e].to(device)
-            wu = self.w_up[e].to(device)
-            wd = self.w_down[e].to(device)
+        if self.expert_quant == 'bf16':
+            wg = self.w_gate_bf16[e].to(device).float()
+            wu = self.w_up_bf16[e].to(device).float()
+            wd = self.w_down_bf16[e].to(device).float()
             bg = self.b_gate[e].to(device)
             bu = self.b_up[e].to(device)
             bd = self.b_down[e].to(device)
+            return wg, wu, wd, bg, bu, bd
+        if self.offload:
+            # non_blocking：pinned 内存的异步 H2D，多个专家拷贝在 copy engine 上流水线化
+            wg = self.w_gate[e].to(device, non_blocking=True)
+            wu = self.w_up[e].to(device, non_blocking=True)
+            wd = self.w_down[e].to(device, non_blocking=True)
+            bg = self.b_gate[e].to(device, non_blocking=True)
+            bu = self.b_up[e].to(device, non_blocking=True)
+            bd = self.b_down[e].to(device, non_blocking=True)
         else:
             wg = self.w_gate[e]; wu = self.w_up[e]; wd = self.w_down[e]
             bg = self.b_gate[e]; bu = self.b_up[e]; bd = self.b_down[e]
@@ -1589,6 +1904,29 @@ class MoEFFN(nn.Module):
         p = probs.mean(dim=0)                               # (E,)
         return E * (f.detach() * p).sum()
 
+    def _dispatch_experts(self, expert_ids, device):
+        """批量、尽早派发命中专家的取参（offload 时即 H2D 拷贝），返回 {e: mats}。
+        - 推理（eval/no_grad）+ offload：在独立 copy stream 上异步搬运并以 event 同步，
+          copy engine 与默认流的索引/计算重叠，隐藏 PCIe 传输；
+        - 训练：留在默认流一次性派发全部 non_blocking 拷贝（copy engine 流水线化），
+          保留 .to() 的可微 Copy 节点，梯度仍回传 CPU 专家参数（跨 stream 不用于训练以避免 autograd 竞态）。
+        数学结果与逐个 _expert_mats 完全一致，仅改变派发时序。"""
+        if not expert_ids:
+            return {}
+        use_stream = (self.offload and self._copy_stream is not None
+                      and device.type == 'cuda' and not self.training
+                      and not torch.is_grad_enabled())
+        if use_stream:
+            cur = torch.cuda.current_stream(device)
+            with torch.cuda.stream(self._copy_stream):
+                self._copy_stream.wait_stream(cur)
+                mats = {e: self._expert_mats(e, device) for e in expert_ids}
+            self._copy_event = torch.cuda.Event()
+            self._copy_event.record(self._copy_stream)
+            cur.wait_event(self._copy_event)   # 默认流使用权重前确保 H2D 完成
+            return mats
+        return {e: self._expert_mats(e, device) for e in expert_ids}
+
     def forward(self, x, return_aux=True):
         # x: (B, T, D)
         B, T, D = x.shape
@@ -1596,15 +1934,22 @@ class MoEFFN(nn.Module):
         xf = x.reshape(N, D)
         device = x.device
         topk_p, topk_i, probs = self._router_topk(xf)
-        accum_idx, accum_val = [], []
+        # 阶段1：遍历路由，收集命中专家与其 token（此刻不搬权重）
+        plan = []
         for e in range(self.num_experts):
             hit = (topk_i == e)
             if not bool(hit.any()):
                 continue
             tok_idx, slot_idx = hit.nonzero(as_tuple=True)
             gp = topk_p[tok_idx, slot_idx]                 # (n,) 门控权重（可微）
+            plan.append((e, tok_idx, gp))
+        # 批量异步派发全部命中专家的权重（独立流重叠 / 默认流提前排队）
+        mats = self._dispatch_experts([e for e, _, _ in plan], device)
+        # 阶段2：逐专家计算（权重已就位），累加顺序与原实现一致 → 结果严格相同
+        accum_idx, accum_val = [], []
+        for e, tok_idx, gp in plan:
             x_e = xf[tok_idx]                              # (n, D)
-            wg, wu, wd, bg, bu, bd = self._expert_mats(e, device)
+            wg, wu, wd, bg, bu, bd = mats[e]
             h = F.silu(F.linear(x_e, wg, bg)) * F.linear(x_e, wu, bu)
             y_e = F.linear(h, wd, bd) * gp.unsqueeze(-1)
             accum_idx.append(tok_idx)
@@ -1740,6 +2085,13 @@ class WaveSNN(nn.Module):
 
         self.forbidden_ids = {pad_token_id}
 
+        # P2-9：CUDA Graph 解码缓存（惰性抓图，states 变化即重抓；抓图失败自动回退 eager）
+        self._dg = None
+        self._dg_states = None
+        self._dg_tok = None
+        self._dg_logits = None
+        self._dg_disabled = False
+
     def forward(self, input_ids: torch.Tensor, labels: Optional[torch.Tensor] = None,
                 return_per_sample_loss: bool = False,
                 position_offset: Optional[int] = None,
@@ -1780,7 +2132,7 @@ class WaveSNN(nn.Module):
             if USE_GRADIENT_CHECKPOINT and self.training:
                 output_wave, stab_pen = checkpoint(
                     lambda l, x, m: l(x, time_mask=m),
-                    layer, layer_input, time_mask, use_reentrant=True
+                    layer, layer_input, time_mask, use_reentrant=False
                 )
             else:
                 output_wave, stab_pen = layer(layer_input, time_mask=time_mask)
@@ -1846,6 +2198,94 @@ class WaveSNN(nn.Module):
     def init_states(self, device):
         return [layer.init_state(device) for layer in self.layers]
 
+    @torch.no_grad()
+    def prefill(self, input_ids):
+        """并行 prefill（P1-8）：一次前向并行跑完整个 prompt，返回 (末位置 logits, 各层状态)。与逐 token step 严格等价。"""
+        device = input_ids.device
+        token_emb = self.embedding(input_ids) * self.input_scale
+        layer_input = token_emb
+        states = []
+        for i, layer in enumerate(self.layers):
+            out, st = layer.forward_prefill(layer_input)
+            if self.use_residual:
+                out = out + layer_input
+            out = self.layer_norms[i](out)
+            if self.moe_enabled:
+                moe_out, _ = self.moes[i](out)
+                if MOE_RESIDUAL:
+                    out = out + moe_out
+                else:
+                    out = moe_out
+                out = self.moe_norms[i](out)
+            layer_input = out
+            states.append(st)
+        norm_last = self.output_norm(layer_input)
+        logits = self.output_fc(norm_last[:, -1:]) * F.softplus(self.logit_scale)
+        return logits, states
+
+    # ---------- P2-9：CUDA Graph 解码（状态快照/恢复 + 惰性抓图 + 失败回退）----------
+    @staticmethod
+    def _state_snapshot(st):
+        """深拷贝状态里的张量（不可变缓存如 eig 元组保留引用），用于抓图预热后回滚。"""
+        if torch.is_tensor(st):
+            return st.clone()
+        if isinstance(st, dict):
+            return {k: WaveSNN._state_snapshot(v) for k, v in st.items()}
+        if isinstance(st, list):
+            return [WaveSNN._state_snapshot(v) for v in st]
+        return st
+
+    @staticmethod
+    def _state_restore(snap, dst):
+        """把快照值原地拷回目标状态（目标与快照结构一致，且张量地址不变）。"""
+        if torch.is_tensor(snap):
+            dst.copy_(snap)
+        elif isinstance(snap, dict):
+            for k, v in snap.items():
+                if torch.is_tensor(v):
+                    dst[k].copy_(v)
+                elif isinstance(v, (dict, list)):
+                    WaveSNN._state_restore(v, dst[k])
+        elif isinstance(snap, list):
+            for a, b in zip(snap, dst):
+                WaveSNN._state_restore(a, b)
+
+    def _capture_decode_graph(self, device, states):
+        """抓一个「单 token 解码步」的 CUDA Graph。不可捕获/开关关闭时返回 None（调用方回退 eager）。"""
+        if not USE_CUDA_GRAPH_DECODE or device.type != 'cuda' or self.moe_enabled:
+            return None
+        try:
+            self._dg_tok = torch.zeros((1, 1), dtype=torch.long, device=device)
+            snap = WaveSNN._state_snapshot(states)
+            # 预热：在图外执行若干步（预分配 workspace，同时让 eig 缓存落位），再把状态回滚
+            for _ in range(int(CUDA_GRAPH_WARMUP)):
+                self.step_tensor(self._dg_tok, states)
+            WaveSNN._state_restore(snap, states)
+            torch.cuda.synchronize()
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                self._dg_logits = self.step_tensor(self._dg_tok, states)
+            # 抓图只记录算子、不执行，状态未被改动；统一同步一次保证图外/图内 stream 对齐
+            torch.cuda.synchronize()
+            return g
+        except Exception:
+            self._dg_logits = None
+            return None
+
+    def decode_step_graphed(self, token_id, states):
+        """CUDA Graph 解码步：与 step 数学一致，但每步只回放一次图（P2-9）。失败自动回退 step。"""
+        device = states[0]['h'].device
+        if self._dg is None or self._dg_states is not states:
+            self._dg = self._capture_decode_graph(device, states)
+            self._dg_states = states
+            if self._dg is None:
+                self._dg_disabled = True
+        if self._dg is None:
+            return self.step(token_id, states)
+        self._dg_tok[0, 0] = token_id           # 写静态输入 buffer（H2D 拷贝，在图外）
+        self._dg.replay()
+        return self._dg_logits
+
     def has_offloaded_params(self) -> bool:
         return any(getattr(m, 'offload', False) for m in self.moes) if self.moe_enabled else False
 
@@ -1855,11 +2295,25 @@ class WaveSNN(nn.Module):
         for m in self.moes:
             m.pack_nvfp4()
 
+    def pack_moe_bf16(self):
+        if not self.moe_enabled:
+            return
+        for m in self.moes:
+            m.pack_bf16()
+
     def step(self, token_id, states):
         """单 token 生成步：token_id (int) -> logits (1, vocab)。与 forward 逐时间步等价。"""
         device = states[0]['h'].device
         emb = self.embedding(torch.tensor([[token_id]], dtype=torch.long, device=device)) * self.input_scale
-        x_t = emb[0, 0]
+        return self._step_emb(emb[0, 0], states)
+
+    def step_tensor(self, tok, states):
+        """同 step，但 token 来自静态 buffer（1,1) long —— CUDA Graph 回放时复用同一输入地址（P2-9）。"""
+        emb = self.embedding(tok) * self.input_scale
+        return self._step_emb(emb[0, 0], states)
+
+    def _step_emb(self, x_t, states):
+        """从嵌入向量 x_t (D,) 起推一层层前向，返回 logits (1, vocab)。step/step_tensor 共用。"""
         for i, layer in enumerate(self.layers):
             y_t = layer.step(x_t, states[i])
             if self.use_residual:
@@ -1895,16 +2349,17 @@ class WaveSNN(nn.Module):
         if self.pad_token_id is not None:
             forbidden.add(self.pad_token_id)
 
-        # 递归推理：初始化状态，逐步跑完 prompt（O(prompt_len)），再逐 token 增量生成（O(1)/步）
-        states = self.init_states(device)
+        # 递归推理：并行 prefill 一次跑完 prompt（O(1) kernel 序列），再逐 token 增量生成（O(1)/步）
         prompt_ids = input_ids[0].tolist()
 
         amp_ctx = torch.amp.autocast("cuda", dtype=torch.bfloat16) if USE_AMP and device.type == "cuda" else contextlib.nullcontext()
 
         logits = None
         with amp_ctx:
-            for tid in prompt_ids:
-                logits = self.step(tid, states)
+            if len(prompt_ids) > 0:
+                logits, states = self.prefill(input_ids)
+            else:
+                states = self.init_states(device)
 
         generated = []
         for _ in range(max_new_tokens):
@@ -1943,7 +2398,7 @@ class WaveSNN(nn.Module):
                 break
 
             with amp_ctx:
-                logits = self.step(next_token, states)
+                logits = self.decode_step_graphed(next_token, states)
 
         return generated
 
@@ -1972,12 +2427,11 @@ def save_checkpoint(model, epoch, custom_filename=None):
 # DataLoader 工厂
 # ------------------------------------------------------------
 def create_dataloader(dataset, batch_size, shuffle, collate_fn, num_workers=0, pin_memory=PIN_MEMORY, drop_last=False):
+    # Windows/macOS 用 spawn：num_workers>0 要求 dataset/collate_fn/worker_init_fn 全部可 pickle，
+    # 且训练入口必须在 if __name__=='__main__' 守卫内（否则 worker 反复 re-import 导致无限派生/卡死）。
+    # collate_fn 已改为顶层 Collator、worker 初始化改为顶层 _seed_worker；NUM_WORKERS 默认 0（Windows 最稳）。
     g = torch.Generator()
     g.manual_seed(42)
-    def worker_init_fn(worker_id):
-        random.seed(42 + worker_id)
-        np.random.seed(42 + worker_id)
-        torch.manual_seed(42 + worker_id)
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -1986,8 +2440,9 @@ def create_dataloader(dataset, batch_size, shuffle, collate_fn, num_workers=0, p
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=drop_last,
-        worker_init_fn=worker_init_fn,
-        generator=g
+        worker_init_fn=_seed_worker if num_workers > 0 else None,
+        generator=g,
+        persistent_workers=(num_workers > 0)
     )
 
 # ------------------------------------------------------------
@@ -2110,7 +2565,7 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                                            collate_fn=collate_fn, num_workers=0,
                                            pin_memory=PIN_MEMORY, drop_last=False)
 
-    num_workers = 0
+    num_workers = NUM_WORKERS
     train_loader = create_dataloader(train_dataset, batch_size=batch_size, shuffle=False,
                                      collate_fn=collate_fn, num_workers=num_workers,
                                      pin_memory=PIN_MEMORY, drop_last=True)
@@ -2136,7 +2591,6 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
     patience_counter = 0
 
     optimizer_steps = 0
-    cleanup_interval = 10
 
     amp_ctx = torch.amp.autocast('cuda', dtype=torch.bfloat16) if USE_AMP and device.type == 'cuda' else contextlib.nullcontext()
 
@@ -2183,12 +2637,6 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                     optimizer.zero_grad()
 
                     optimizer_steps += 1
-                    if optimizer_steps % cleanup_interval == 0:
-                        if device.type == 'cuda':
-                            torch.cuda.empty_cache()
-                        else:
-                            import gc
-                            gc.collect()
 
                 step_loss_sum += loss.item() * accumulation_steps
                 step_count += 1
@@ -2260,12 +2708,6 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                 optimizer.zero_grad()
 
                 optimizer_steps += 1
-                if optimizer_steps % cleanup_interval == 0:
-                    if device.type == 'cuda':
-                        torch.cuda.empty_cache()
-                    else:
-                        import gc
-                        gc.collect()
 
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
@@ -3069,6 +3511,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
