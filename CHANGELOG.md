@@ -6,6 +6,16 @@
 
 ---
 
+## 7.0.1 — 2026-10-10
+
+> 定位：v7 的**数据管线正确性补丁** —— 修复训练样本中 system 段丢失、以及残缺样本污染生成行为两处问题；不改动模型结构 / 优化器 / 数值路径。
+
+### 修复
+- **system 消息丢失**：`_truncate_pairs` 只识别相邻 `(user, assistant)` 对，会把对话开头的连续 `system` 段整段丢弃 —— 于是出现"`render_messages` 支持 system、训练语料里却永远看不到 system"的不一致。现改为：先把开头连续 `system` 段原样摘出并计入 token 预算，再从尾部取 `(user, assistant)` 对，最后合并返回。
+- **以 user 结尾样本的护栏**：仅含 user（或 system + user）、没有任何 assistant 回复的残缺样本，其唯一训练目标只剩结尾的 `<|eos|>`，会让模型学到"user 之后立刻结束序列"、污染生成行为。新增 `_has_assistant_target` 护栏：`_render_conversation` / `_tokenize_conversation` 在无 assistant 可训练目标时分别返回 `None` / 空张量，`StreamingJSONLDataset` 迭代时跳过该行。
+
+---
+
 ## 7.0.0 — 2026-10-10
 
 > 定位：v6 的训练侧「无损加速 + 降显存」版本 —— 所有新增开关默认启用、失败自动回退、数学逐位一致。

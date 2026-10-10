@@ -554,12 +554,30 @@ def _split_reasoning(text: str):
 
 
 def _truncate_pairs(messages, tokenizer, max_seq_len):
-    """与旧实现完全相同的截断语义（含 id_cache 优化）：从结尾往回取相邻 (user, assistant) 对。"""
-    kept = []
-    count = 0
+    """从结尾往回取相邻 (user, assistant) 对（含 id_cache 优化）；开头的 system 段始终保留。
+
+    旧语义只认 (user, assistant) 对，会把 system 整段丢掉 —— 于是出现"render_messages 支持
+    system、训练数据里却永远看不到 system"的不一致（tools 却因为单独传参而保留）。
+    这里先把开头连续的 system 段原样摘出，并把其 token 数计入预算。
+    """
     id_cache = {}
+    head = []
+    head_tokens = 0
+    start = 0
+    while start < len(messages) and messages[start].get('role') == 'system':
+        m = messages[start]
+        c = str(m.get('content') or '')
+        ids = id_cache.get(c)
+        if ids is None:
+            ids = tokenizer.encode(c)
+            id_cache[c] = ids
+        head.append(m)
+        head_tokens += len(ids) + 2
+        start += 1
+    kept = []
+    count = head_tokens
     i = len(messages) - 1
-    while i >= 1:
+    while i >= start + 1:
         if messages[i].get('role') == 'assistant' and messages[i - 1].get('role') == 'user':
             pair = [messages[i - 1], messages[i]]
             pair_tokens = 0
@@ -577,7 +595,16 @@ def _truncate_pairs(messages, tokenizer, max_seq_len):
             i -= 2
         else:
             i -= 1
-    return [t for p in kept for t in p]
+    return head + [t for p in kept for t in p]
+
+
+def _has_assistant_target(messages):
+    """截断后至少要有 1 条 assistant 消息，才有可训练目标。
+
+    否则 render_messages 的唯一训练目标只剩结尾的 <|eos|>，模型会学到"user 之后立刻结束序列"，
+    污染生成行为。此类残缺样本（如只有 user、或只有 system+user）应直接跳过。
+    """
+    return any(m.get('role') == 'assistant' for m in messages)
 
 
 class StreamDecoder:
@@ -1755,14 +1782,21 @@ class StreamingJSONLDataset(IterableDataset):
         """v5：统一走 render_messages + offsets 掩码（与旧实现逐 token 等价，已全语料对拍）。"""
         msgs = _messages_from_record(convs)
         msgs = _truncate_pairs(msgs, self.tokenizer, self.max_seq_len)
+        if not _has_assistant_target(msgs):
+            return torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long)
         text, spans = render_messages(msgs, tools=tools)
         ids, offs = _encode_with_offsets(self.tokenizer, text)
         return self._sample_from_encoding(ids, offs, spans)
 
     def _render_conversation(self, convs, tools=None):
-        """渲染 messages -> (text, spans)；与 _tokenize_conversation 的渲染段逐字相同。"""
+        """渲染 messages -> (text, spans)；与 _tokenize_conversation 的渲染段逐字相同。
+
+        无 assistant 可训练目标的残缺样本返回 None，由调用方跳过。
+        """
         msgs = _messages_from_record(convs)
         msgs = _truncate_pairs(msgs, self.tokenizer, self.max_seq_len)
+        if not _has_assistant_target(msgs):
+            return None
         return render_messages(msgs, tools=tools)
 
     def _sample_from_encoding(self, ids, offs, spans):
@@ -1806,6 +1840,8 @@ class StreamingJSONLDataset(IterableDataset):
                     if not convs:
                         continue
                     rendered = self._render_conversation(convs, tools=data.get('tools'))
+                    if rendered is None:
+                        continue
                 except (json.JSONDecodeError, KeyError):
                     continue
                 pending.append(rendered)
