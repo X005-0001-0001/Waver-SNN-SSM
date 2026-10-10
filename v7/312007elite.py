@@ -2975,46 +2975,48 @@ class WaveSNN(nn.Module):
             input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 
         logits = None
+        generated = []
+        # P19：整个 prefill + 逐 token 解码循环保持在同一个 autocast 上下文内，不再每步单独进出。
+        # CUDA Graph 抓图会把 bf16 权重副本烘焙进图，而退出最外层 autocast 会触发
+        # clear_autocast_cache() 释放这些副本，回放时读到已复用显存 → 数值发散/崩溃。
         with amp_ctx:
             logits, states = self.prefill(input_ids)
 
-        generated = []
-        for _ in range(max_new_tokens):
-            last_logits = logits[0].float()
-            probs = F.softmax(last_logits / temperature, dim=-1)
+            for _ in range(max_new_tokens):
+                last_logits = logits[0].float()
+                probs = F.softmax(last_logits / temperature, dim=-1)
 
-            for fid in forbidden:
-                if fid < self.vocab_size:
-                    probs[fid] = 0.0
-
-            sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-            cumsum = torch.cumsum(sorted_probs, dim=-1)
-            mask = cumsum > top_p
-            mask[0] = False
-            sorted_probs[mask] = 0.0
-
-            if sorted_probs.sum() == 0:
-                uniform = torch.ones(self.vocab_size, device=device) / self.vocab_size
                 for fid in forbidden:
                     if fid < self.vocab_size:
-                        uniform[fid] = 0.0
-                if uniform.sum() == 0:
+                        probs[fid] = 0.0
+
+                sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+                cumsum = torch.cumsum(sorted_probs, dim=-1)
+                mask = cumsum > top_p
+                mask[0] = False
+                sorted_probs[mask] = 0.0
+
+                if sorted_probs.sum() == 0:
                     uniform = torch.ones(self.vocab_size, device=device) / self.vocab_size
+                    for fid in forbidden:
+                        if fid < self.vocab_size:
+                            uniform[fid] = 0.0
+                    if uniform.sum() == 0:
+                        uniform = torch.ones(self.vocab_size, device=device) / self.vocab_size
+                    else:
+                        uniform = uniform / uniform.sum()
+                    sorted_probs, sorted_indices = torch.sort(uniform, descending=True)
                 else:
-                    uniform = uniform / uniform.sum()
-                sorted_probs, sorted_indices = torch.sort(uniform, descending=True)
-            else:
-                sorted_probs = sorted_probs / sorted_probs.sum()
+                    sorted_probs = sorted_probs / sorted_probs.sum()
 
-            next_token = sorted_indices[torch.multinomial(sorted_probs, 1).item()].item()
+                next_token = sorted_indices[torch.multinomial(sorted_probs, 1).item()].item()
 
-            generated.append(next_token)
-            if stream is not None:
-                stream(next_token)
-            if next_token in stop_tokens:
-                break
+                generated.append(next_token)
+                if stream is not None:
+                    stream(next_token)
+                if next_token in stop_tokens:
+                    break
 
-            with amp_ctx:
                 logits = self.decode_step_graphed(next_token, states)
 
         return generated

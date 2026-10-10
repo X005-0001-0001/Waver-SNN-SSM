@@ -9,7 +9,7 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`7.0.2`（2026-10-10）** —— 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪（承接 7.0.1 的 system 丢失修复与 7.0.0 的训练步 CUDA Graph + 8-bit AdamW）。
+> **当前最新 / Latest：`7.0.3`（2026-10-11）** —— 修复 CUDA Graph 解码 × AMP 的生成崩溃（承接 7.0.2 的切分/日志补丁与 7.0.0 的训练步 CUDA Graph + 8-bit AdamW）。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -81,11 +81,20 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **7.0.2** | **2026-10-10** | **菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪** |
+| **7.0.3** | **2026-10-11** | **修复 CUDA Graph 解码 × AMP 生成崩溃（autocast 缓存冲突）** |
+| 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
 
-## 🚀 7.0.2 核心变更
+## 🚀 7.0.3 核心变更
+
+> 定位：v7 的**生成路径正确性补丁** —— 修复启用 `USE_CUDA_GRAPH_DECODE` 时，菜单 2 对话在 AMP（bf16）下生成若干步后崩溃的问题；不改动模型结构 / 优化器 / 数值路径。
+
+- **CUDA Graph 解码 × autocast 缓存冲突**：`generate` 原先让 `prefill` 与每一步解码各自单独进出 `torch.amp.autocast`。抓图前的预热在 autocast 内执行，会把 bf16 权重副本写入 autocast 缓存；随后的抓图直接复用这些缓存张量、未记录 cast 算子；而退出最外层 autocast 会触发 `clear_autocast_cache()` 释放这些副本 —— 图回放便读到已被复用的显存，数值发散产生 NaN/Inf 非法分布，最终 `torch.multinomial` 触发设备端断言、进程硬崩。
+- **修复方式**：把整个 `prefill` + 逐 token 解码循环保持在**同一个** autocast 上下文内，不再每步单独进出。autocast 缓存全程存活，抓图烘焙的 bf16 权重始终有效。
+- **验证**：同一 checkpoint（seed=0）下，7.0.2 开启图解码必崩；修复后正常生成无异常；固定 token 序列上「图解码 vs eager」logits 最大绝对误差为 **0.0**（逐位一致）。
+
+### 7.0.2 数据预处理与日志降噪
 
 > 定位：v7 的**数据预处理与日志降噪补丁** —— 修复菜单 11 切分后 system 段丢失、对齐切分长度口径，并消除无 triton 环境下的无害告警；不改动模型结构 / 优化器 / 数值路径。
 
@@ -301,11 +310,20 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **7.0.2** | **2026-10-10** | **Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup** |
+| **7.0.3** | **2026-10-11** | **Fix CUDA Graph decoding × AMP generation crash (autocast-cache conflict)** |
+| 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
 
-## 🚀 What's New in 7.0.2
+## 🚀 What's New in 7.0.3
+
+> v7.0.3 is a **generation-path correctness patch** over v7.0.2 — it fixes a crash in menu 2 chat under AMP (bf16) when `USE_CUDA_GRAPH_DECODE` is enabled; the model architecture, optimizers and numerical paths are untouched.
+
+- **CUDA Graph decoding × autocast-cache conflict**: `generate` used to enter/exit `torch.amp.autocast` separately for `prefill` and for every decode step. The pre-capture warmup ran inside autocast and cached bf16 weight copies; the subsequent capture then aliased those cached tensors instead of recording cast ops; exiting the outermost autocast triggered `clear_autocast_cache()`, freeing them — so graph replay read already-reused memory, diverged to NaN/Inf distributions, and `torch.multinomial` hit a device-side assert that hard-crashed the process.
+- **Fix**: keep the entire `prefill` + per-token decode loop inside **one** autocast context instead of entering/exiting per step. The autocast cache stays alive throughout, so the bf16 weights baked into the graph remain valid.
+- **Verification**: with the same checkpoint (seed=0), 7.0.2 crashes deterministically with graph decoding on; the fixed build generates normally. On a fixed token sequence, the max absolute logit difference between graph decoding and eager is **0.0** (bit-identical).
+
+### 7.0.2 data-preprocessing and log-noise
 
 > v7.0.2 is a **data-preprocessing and log-noise patch** over v7.0.1 — it fixes the dropped `system` span in menu 11 segmentation, aligns the segmentation length accounting, and silences a harmless warning in triton-less environments; the model architecture, optimizers and numerical paths are untouched.
 
@@ -453,5 +471,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 7.0.2
-Last Updated: 2026-10-10
+Version: 7.0.3
+Last Updated: 2026-10-11
