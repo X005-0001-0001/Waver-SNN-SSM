@@ -30,6 +30,7 @@
 # 环境说明：本机 Win11 + torch 2.11 不支持 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 #           （设置后分配器报 invalid argument，属平台限制，不是代码缺陷），勿在该平台启用。
 import json
+import logging
 import math
 import unicodedata
 import os
@@ -50,6 +51,10 @@ from torch.utils.data import Dataset, DataLoader, IterableDataset
 from torch.utils.checkpoint import checkpoint
 
 # 007elite：主训练优化器可选 bitsandbytes AdamW8bit（8-bit 动量状态，省显存）；未安装/非 CUDA 时自动回退原生优化器。
+# bitsandbytes 导入会顺带导入 torch.utils.flop_counter，在无 triton 的 CUDA 环境下会打一条
+# "triton not found; flop counting will not work for triton kernels" 的 WARNING（无害，仅影响 triton 内核的 FLOP 统计）。
+# 这里把该 logger 降到 ERROR，纯降噪，不影响任何功能。
+logging.getLogger("torch.utils.flop_counter").setLevel(logging.ERROR)
 try:
     import bitsandbytes as bnb
     HAS_BNB = True
@@ -4086,6 +4091,18 @@ def p4_segment_dataset(input_path, output_path, tokenizer, threshold):
             if not convs:
                 continue
 
+            # 开头的连续 system 段始终保留（与训练路径 _truncate_pairs 语义一致）：
+            # 计入 token 预算后拼到每条切分样本前，避免切分后 system 整段丢失。
+            head = []
+            head_tokens = 0
+            start = 0
+            while start < len(convs) and convs[start].get('role') == 'system':
+                m = convs[start]
+                ids = tokenizer.encode(str(m.get('content') or ''))
+                head.append(m)
+                head_tokens += len(ids) + 2
+                start += 1
+
             # 按 (user, assistant) 对切分
             pairs = []
             i = 0
@@ -4101,17 +4118,17 @@ def p4_segment_dataset(input_path, output_path, tokenizer, threshold):
 
             line_kept = 0
             for pair in pairs:
-                pair_tokens = 0
+                pair_tokens = head_tokens
                 for turn in pair:
                     content = turn.get('content', '')
                     ids = tokenizer.encode(content)
-                    pair_tokens += len(ids) + 2      # role token + end token 开销
+                    pair_tokens += len(ids) + 2      # 近似：role token + end token 开销
                 # 与真实样本长度对齐：input_ids = tokens[:-1]（tokens = [BOS] + 各轮 + [EOS]），
                 # 故真实长度 = Σ(len(ids)+2) + 1。不加这 1 会让边界样本多留一条。
                 pair_tokens += 1
 
                 if pair_tokens <= threshold:
-                    record = {'messages': list(pair)}
+                    record = {'messages': head + list(pair)}
                     fout.write(json.dumps(record, ensure_ascii=False) + '\n')
                     stats['kept_samples'] += 1
                     line_kept += 1
