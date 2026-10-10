@@ -9,7 +9,7 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`7.1.0`（2026-10-11）** —— 新增 017 变体：相位基频 θ 的结构性上界参数化 `θ = π·sigmoid(theta_raw)`（承接 7.0.3 的生成崩溃修复）。
+> **当前最新 / Latest：`7.2.0`（2026-10-11）** —— 新增 008 变体：回退 017 的 θ 结构性上界，改用 **δ 下限** 直击无遗忘积分器与 amp 自激（承接 7.1.0 的 017 变体）。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -58,14 +58,14 @@ Waver-SNN-SSM/
 ├── v4.2/        # jsonl 显存碎片修复（312004elite）
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
-├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界（312007elite / 312017elite / 312507elite / 3125017elite）
+├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界 / δ 下限（312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）。
+**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）。
 
 ## 📜 版本历史
 
@@ -81,11 +81,21 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **7.1.0** | **2026-10-11** | **017 变体：相位基频 θ 结构性上界 `θ = π·sigmoid(theta_raw)`** |
+| **7.2.0** | **2026-10-11** | **008 变体：回退 θ 结构性上界 + 新增 δ 下限（治无遗忘积分器 / amp 自激）** |
+| 7.1.0 | 2026-10-11 | 017 变体：相位基频 θ 结构性上界 `θ = π·sigmoid(theta_raw)` |
 | 7.0.3 | 2026-10-11 | 修复 CUDA Graph 解码 × AMP 生成崩溃（autocast 缓存冲突） |
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 7.2.0 核心变更
+
+> 定位：v7 的**动力学稳定性分支（修正 7.1.0 的抓手）** —— 在 007 基础上派生 **008 变体**：**回退 017 的 θ 结构性上界**（回到原生 `θ = exp(theta_raw)`），并新增 **δ 下限** 软约束，直击 0.6B 训练中 δ→0 导致的无遗忘积分器与 amp 自激。不改动模型结构 / 优化器 / 数值路径（`DELTA_MIN_ENABLED=False` 时与 007 逐位一致）。
+
+- **修正：017 的 θ 上界抓错了变量**。旋转本身**模 2π**，「转过头」不存在；真正的现象是**采样混叠**（`δ·θ > π`）。实测 δ~0.05，混叠起点 `θ ≈ π/δ ≈ 30`，而 π 上限远未触界；且 `π·sigmoid` 在边界附近梯度趋零、反害优化。故 008 **回退原生 `θ = exp(theta_raw)`**，与 007 逐位一致（`THETA_STRUCTURAL_BOUND_ENABLED=False`，开关保留供对照）。
+- **δ 下限开关** `DELTA_MIN_ENABLED`（**默认开启**）与 `DELTA_MIN`（默认 `0.01`）：病根是 `δ = softplus(delta_raw)·softplus(delta_scale)`，训练可把 `delta_scale` 推向 −∞ 使 δ→0；此时 `A = exp(δ·Ω) → I`，该通道退化为**无遗忘积分器**（记忆无界）→ BPTT 梯度沿时间不衰减而爆掉 → amp 自激。旗舰版 0.6B 实测：`amp_std` 从 0.0001 涨到 1231，`PPL` 长期 2000+ 震荡；而 `|A| = exp(−δν)` 与 θ 无关，故卡 θ 治不了自激，真正的抓手是 δ。
+- **加性软下限** `δ ← DELTA_MIN + δ`：保证 `δ ≥ DELTA_MIN` 且**处处可导、无梯度死区**（梯度 1:1 透传）；最坏情形 `|A| ≤ exp(−DELTA_MIN·ν_min) < 1`，记忆时域有界。`DELTA_MIN_ENABLED=False`（或 `DELTA_MIN=0`）时与 007 逐位一致。
+- **008 变体**：ultra3 的 6 个 007 文件（`210/212/2125/310/312/3125`）各派生一个 008；本次 release 发布主族 `312008elite.py` 与 x25 族 `3125008elite.py`，同时保留 `312007elite.py` / `312507elite.py` 供对照（008 = 007 + δ 下限）。
 
 ## 🚀 7.1.0 核心变更
 
@@ -296,14 +306,14 @@ Waver-SNN-SSM/
 ├── v4.2/        # jsonl memory-fragmentation fix (312004elite)
 ├── v5/          # v5 data-format layer (312005elite / 312505elite)
 ├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
-├── v7/          # training-step CUDA Graph + 8-bit AdamW + θ structural bound (312007elite / 312017elite / 312507elite / 3125017elite)
+├── v7/          # training-step CUDA Graph + 8-bit AdamW + θ structural bound / δ floor (312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite)
 ├── compare/     # comparison: round3 figure set + v6 report + dashboards
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default).
+**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default).
 
 ## 📜 Version History
 
@@ -319,11 +329,21 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **7.1.0** | **2026-10-11** | **017 variant: structural upper bound on the base phase θ, `θ = π·sigmoid(theta_raw)`** |
+| **7.2.0** | **2026-10-11** | **008 variant: θ structural bound reverted + new δ floor (fixes the forgetless integrator / amp self-excitation)** |
+| 7.1.0 | 2026-10-11 | 017 variant: structural upper bound on the base phase θ, `θ = π·sigmoid(theta_raw)` |
 | 7.0.3 | 2026-10-11 | Fix CUDA Graph decoding × AMP generation crash (autocast-cache conflict) |
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 7.2.0
+
+> v7.2.0 is the **dynamics-stability branch** of v7 (it corrects the lever chosen in 7.1.0) — it derives an **008 variant** from 007: it **reverts the 017 θ structural bound** (back to the native `θ = exp(theta_raw)`) and adds a **δ floor** soft constraint that directly targets the forgetless integrator and amp self-excitation caused by δ→0 in 0.6B training. The model architecture, optimizers and numerical paths are untouched (with `DELTA_MIN_ENABLED=False` it is bit-identical to 007).
+
+- **Correction: the 017 θ bound constrained the wrong variable.** Rotation is **mod 2π**, so "turning past half a turn" does not exist; the real phenomenon is **sampling aliasing** (`δ·θ > π`). With measured δ~0.05, aliasing starts at `θ ≈ π/δ ≈ 30`, far beyond the π cap; moreover `π·sigmoid` has a vanishing gradient near the boundary, which hurts optimization. Hence 008 **reverts to the native `θ = exp(theta_raw)`**, bit-identical to 007 (`THETA_STRUCTURAL_BOUND_ENABLED=False`, the switch is kept for comparison).
+- **δ-floor switch** `DELTA_MIN_ENABLED` (**on by default**) and `DELTA_MIN` (default `0.01`): the root cause is `δ = softplus(delta_raw)·softplus(delta_scale)` — training can push `delta_scale` toward −∞ so that δ→0; then `A = exp(δ·Ω) → I`, and the channel degenerates into a **forgetless integrator** (unbounded memory) → the BPTT gradient no longer decays over time and blows up → amp self-excitation. Measured on the flagship 0.6B: `amp_std` grows from 0.0001 to 1231 and `PPL` oscillates around 2000+ for a long time; since `|A| = exp(−δν)` is independent of θ, capping θ cannot fix the self-excitation — the real lever is δ.
+- **Additive soft floor** `δ ← DELTA_MIN + δ`: guarantees `δ ≥ DELTA_MIN` and is **everywhere differentiable with no gradient dead zone** (gradient passes through 1:1); worst case `|A| ≤ exp(−DELTA_MIN·ν_min) < 1`, so the memory horizon is bounded. With `DELTA_MIN_ENABLED=False` (or `DELTA_MIN=0`) it is bit-identical to 007.
+- **008 variant**: each of the 6 ultra3 007 files (`210/212/2125/310/312/3125`) derives an 008; this release ships the main family `312008elite.py` and the x25 family `3125008elite.py`, while keeping `312007elite.py` / `312507elite.py` for comparison (008 = 007 + δ floor).
 
 ## 🚀 What's New in 7.1.0
 
@@ -489,5 +509,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 7.1.0
+Version: 7.2.0
 Last Updated: 2026-10-11
