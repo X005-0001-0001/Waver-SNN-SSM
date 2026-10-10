@@ -6,11 +6,45 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 
-Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发、最终与 Mamba-3 理念殊途同归的高效状态空间模型（SSM）实现。核心创新在于把复值 SSM 的复数算子完整替换为**实值 2×2 块同构**，在代数层面实现“无复数”的复数 SSM，从而安全启用 BF16 混合精度训练，大幅降低显存占用并加速训练。
+**A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
+**把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新：v6.0.0（2026-10-10）** —— 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用。
+> **当前最新 / Latest：`7.0.0`（2026-10-10）** —— 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化。
+
+**语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
 ---
+
+<a name="中文文档"></a>
+
+# 中文文档
+
+## 📌 项目简介
+
+Waver-SNN-SSM 是一个从脉冲神经网络（SNN）出发、最终与 Mamba-3 理念殊途同归的高效状态空间模型（SSM）实现。核心创新在于把复值 SSM 的复数算子完整替换为**实值 2×2 块同构**，在代数层面实现"无复数"的复数 SSM，从而安全启用 BF16 混合精度训练，大幅降低显存占用并加速训练。
+
+## 🧭 架构总览
+
+```mermaid
+flowchart TD
+    A["Token IDs"] --> B["Embedding"]
+    B --> C["ParallelComplexWaveLayer × L<br/>complex SSM → real 2×2 blocks"]
+    C --> D["MoE-FFN<br/>SwiGLU experts, Top-2 routing"]
+    D --> E["Global Summarizer<br/>read / write head"]
+    E --> F["LM Head"]
+```
+
+核心状态方程（唯一路径）：
+
+```
+h_t = A_t @ h_{t-1} + b_t          # 并行前缀扫描
+A_t = matrix_exp(δ_t · Ω_t)        # 实值 2×2 块矩阵指数
+Ω_t = M + diag(-ν + i·(θ_base + θ_delta_t))
+```
+
+- `M`：可学习子通道耦合（斜埃尔米特结构），比对角 / 标量矩阵更具表达力
+- 稳定性由 **Bendixson 定理**结构性保证（`Re Ω < 0`），不依赖任何阈值
+- `iθ` 项天然提供位置编码（等价 RoPE），无需额外的正弦位置编码
 
 ## 🗂 仓库结构
 
@@ -24,6 +58,7 @@ Waver-SNN-SSM/
 ├── v4.2/        # jsonl 显存碎片修复（312004elite）
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
+├── v7/          # 训练步 CUDA Graph + 8-bit AdamW（312007elite / 312507elite）
 ├── compare/     # 精简对照实验（核心图 + 验证报告 + 看板工具）
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
@@ -36,25 +71,27 @@ Waver-SNN-SSM/
 
 | 版本 | 日期 | 核心变更 |
 |---|---|---|
-| v1.0.0 | 2026-09-05 | 首次公开发布：复值 SSM 实值化 2×2 块同构、MoE-FFN、全局摘要器、自定义 Blelloch 并行前缀扫描 |
-| v1.0.1 | 2026-09-05 | FastBPE 逐 token 性能修复（`_vocab_size_cache`）|
-| v1.0.2 | 2026-09-05 | `brain.pt` 惰性加载，聊天不再触发 OOM |
+| 1.0.0 | 2026-09-05 | 首次公开发布：复值 SSM 实值化 2×2 块同构、MoE-FFN、全局摘要器、自定义 Blelloch 并行前缀扫描 |
+| 1.0.1 | 2026-09-05 | FastBPE 逐 token 性能修复（`_vocab_size_cache`）|
+| 1.0.2 | 2026-09-05 | `brain.pt` 惰性加载，聊天不再触发 OOM |
 | 2.0.0 | 2026-09-09 | 性能优化与工程加速：Blelloch 填充修复、Ω 对角复扫描、分块线性注意力、并行 Prefill、CUDA Graph 解码、MoE 独立 Copy Stream / BF16 常驻 |
 | 3.1.0 | 2026-09-17 | 架构重构：统一 `A_t = matrix_exp(δ_t·Ω_t)` 实值矩阵扫描，删除 eig 路径，δ 逐通道化，新增数据依赖旋转 `theta_delta` |
 | 4.0.0 | 2026-09-23 | Loop 机制（权重共享循环层）+ SSM 分块扫描 `SSM_CHUNK_SIZE` |
 | 4.1.0 | 2026-09-28 | 稳定性更新 + 与经典 Transformer 的受控对照（层内耦合开 / 关）|
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
-| **6.0.0** | **2026-10-10** | **闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用** |
+| 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
+| **7.0.0** | **2026-10-10** | **训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化** |
 
-## 🚀 v6.0.0 核心变更
+## 🚀 7.0.0 核心变更
 
-- **闭式矩阵指数（K=2）**：`USE_CLOSED_FORM_EXPM` —— 2×2 复矩阵 `exp(δ·Ω_t)` 走 Cayley–Hamilton 闭式，配级数小量保护；与 `torch.linalg.matrix_exp` **数学恒等**（fp64 相对差 ~1e-15），且**无 LAPACK 调用、可被 CUDA Graph 捕获**。
-- **解码 CUDA Graph 默认启用**：`USE_CUDA_GRAPH_DECODE=True`，抓图后对输出 `detach().clone()`，与 eager 逐位一致（12/12 抓图成功）。
-- **批量分词** `_encode_batch_with_offsets`：一次 `encode_batch` 一批，**保持 shuffle 时机与 rng 调用序列完全一致**（T0 排序哈希不变）。
-- **`_split_reasoning`** 同时支持 `think` / `thinking` 双标签。
-- **分词缓存键**纳入归一化模式 + `tokenizers` 库版本，避免跨配置误复用。
-- BlellochScanFn 去掉多余 clone；梯度检查点 `preserve_rng_state=False`；保留 `R_cpl` 缓存键（修复抓图失败）。
+> 定位：v7 是 v6 的**训练侧「无损加速 + 降显存」版本** —— 所有新增开关默认启用、失败自动回退、数学逐位一致。
+
+- **训练步 CUDA Graph** `USE_TRAIN_STEP_CUDA_GRAPH`：把训练步的 **fwd + bwd** 抓成 CUDA Graph（按序列长度分桶缓存，`TRAIN_GRAPH_BUCKET` / `TRAIN_GRAPH_MAX_GRAPHS`），消除每步约 10 万次 kernel 启动开销。`optimizer.step()` / `scheduler.step()` / 梯度裁剪留在图外；仅 CUDA + 非 MoE + batch=1 生效，抓图失败自动回退 eager（**仅性能回退，数学不变**）。
+- **8-bit AdamW** `USE_ADAMW8BIT`：主训练优化器改用 bitsandbytes `AdamW8bit`（8-bit 动量状态），约省 **36%** 优化器显存；非 CUDA 或未安装 bitsandbytes 时自动回退本文件原生优化器（Adafactor / AdamW）。
+- **矩阵指数 / 抓图开关集中化**：统一放在文件头部。新增 `USE_CAPTURABLE_EXPM`（K>2 走「缩放-平方 + Taylor 级数」，纯 matmul / 逐元素、无 LAPACK，可被 CUDA Graph 捕获；**默认关闭**，K>2 默认回退 `torch.linalg.matrix_exp`）。
+- **梯度检查点默认开启**；loss 缩放与 `zero_grad(set_to_none=False)` 适配训练图。
+- 精简对照实验纳入 `compare/`；README 重写 + 新增 `CHANGELOG.md`。
 
 ## 📖 核心特性
 
@@ -79,7 +116,7 @@ Waver-SNN-SSM/
 - 状态转移：`h_t = A_t @ h_{t-1} + b_t`
 - 唯一路径：`A_t = matrix_exp(δ_t · Ω_t)`，其中 `Ω_t = M + diag(-ν + i·(θ_base + θ_delta_t))`
 - 并行扫描：自定义 `BlellochScanFn` 实现 O(log T) 并行前缀扫描，前向 / 反向均可并行
-- 稳定性由 **Bendixson 定理**结构性保证（`Re Ω < 0`），不依赖任何阈值
+- 稳定性由 **Bendixon 定理**结构性保证（`Re Ω < 0`），不依赖任何阈值
 
 ### 全局摘要器（Summarizer）
 通过 `SUMMARY_TYPE` 切换：
@@ -94,13 +131,50 @@ SwiGLU 混合专家：
 - `MOE_EXPERT_QUANT`：支持 FP8（E4M3）训练量化、NVFP4（E2M1）推理量化、BF16 常驻推理
 - `MOE_EXPERT_WNORM`：权重归一化，防止训练发散
 
-## 📊 对照实验
+## 📊 对照实验（含图）
 
-历史对照结果与复现脚本集中在 [`compare/`](./compare/)：
+历史对照结果与复现脚本集中在 [`compare/`](./compare/)。
 
-- **v4.1** —— 与经典 Transformer 的受控对照（同词表 / 同优化器 / 参数量对齐）
-- **v6** —— 低精度方案（8-bit AdamW / FP8 / NVFP4）与训练侧加速验证报告 + 复现脚本
-- **看板工具** —— 只读训练日志、无第三方依赖的本地交互看板
+### 1. Waver vs 经典 Transformer（v2 · 约 9.5M 参数 · 15.36M tokens）
+
+严格控制变量：同词表、同优化器、同超参数；Transformer 参数量（9.48M）略高于 Waver（9.29M），结论更保守。
+
+| 训练损失 | 验证 PPL |
+|---|---|
+| ![Waver vs Transformer loss](./v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](./v2/compare/test1/result/ppl.png) |
+
+> Waver 全训练流程损失下降更快、最终收敛值更低。
+
+### 2. 层内耦合（Intra-layer Coupling）开 / 关对照（v2）
+
+![Coupling on/off](./v2/compare/test2nocoupling/compare_plots/loss.png)
+
+> 训练后期（过拟合阶段）**启用耦合**的模型展现微弱但稳定的优势。
+
+### 3. v4.1 受控对照（同词表 / 同优化器 / 参数量对齐）
+
+| 训练损失 | 验证 PPL | 显存占用 |
+|---|---|---|
+| ![v4.1 loss](./compare/v4.1/loss.png) | ![v4.1 ppl](./compare/v4.1/ppl.png) | ![v4.1 memory](./compare/v4.1/memory.png) |
+
+更多曲线（对数轴 / 双对数轴 / 差值 / 学习率 / 激活）见 [`compare/v4.1/`](./compare/v4.1/)。
+
+### 4. v1 1.6B 模型训练总览
+
+![v1 overview](./v1/plots/overview.png)
+
+> 1.6B 参数模型在约 17.9M tokens（远低于 Chinchilla 最优）下，Loss 从 ~10 稳定降至 ~5，PPL 从 ~49000 降至 ~200 —— 架构有效性的有力证据。
+
+### 5. v6 低精度 + 训练侧加速验证（RTX 5080 16GB）
+
+| 结论 | 数据 |
+|---|---|
+| 8-bit AdamW 稳定性 | 全程 MON 指标相对偏差 < 3.4e-3（bf16 量化噪声量级），无漂移 |
+| 8-bit AdamW 显存 | 优化器显存 **-35.7%**（421.7MB → 271.1MB）|
+| FP8 / NVFP4 专家量化 | NVFP4 推理省 **45.6%** 显存，logits 相对误差仅 2e-4 |
+| 训练步 CUDA Graph | fwd+bwd 抓图 **2.4–2.6×**；关梯度检查点 + 抓图合计约 **3.4×** |
+
+完整报告与探针脚本见 [`compare/v6/`](./compare/v6/) 与 [`compare/README.md`](./compare/README.md)。
 
 ## 🔧 使用
 
@@ -138,5 +212,204 @@ python v5/312005elite.py
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 本代码及相关文档的首次公开发布时间由 Zenodo DOI 10.5281/zenodo.22309186 锁定。任何未经授权的抄袭、洗稿或未注明来源的引用，均视为侵犯版权。
 
-Version: 6.0.0
+---
+
+<a name="english-documentation"></a>
+
+# English Documentation
+
+## 📌 Overview
+
+Waver-SNN-SSM starts from spiking neural networks (SNN) and evolves into an efficient state-space model (SSM) that converges, by a different route, with the ideas behind Mamba-3. Its core innovation is replacing every complex operator of a complex-valued SSM with a **real 2×2 block isomorphism** — a "complex-free" complex SSM at the algebraic level — which safely unlocks BF16 mixed-precision training and substantially reduces memory usage while accelerating training.
+
+## 🧭 Architecture
+
+```mermaid
+flowchart TD
+    A["Token IDs"] --> B["Embedding"]
+    B --> C["ParallelComplexWaveLayer × L<br/>complex SSM → real 2×2 blocks"]
+    C --> D["MoE-FFN<br/>SwiGLU experts, Top-2 routing"]
+    D --> E["Global Summarizer<br/>read / write head"]
+    E --> F["LM Head"]
+```
+
+Core state dynamics (single unified path):
+
+```
+h_t = A_t @ h_{t-1} + b_t          # parallel prefix scan
+A_t = matrix_exp(δ_t · Ω_t)        # real 2×2 block matrix exponential
+Ω_t = M + diag(-ν + i·(θ_base + θ_delta_t))
+```
+
+- `M`: learnable inter-subchannel coupling (skew-Hermitian), more expressive than diagonal/scalar matrices
+- Stability is structurally guaranteed by the **Bendixson theorem** (`Re Ω < 0`), with no thresholds
+- The `iθ` term natively provides positional encoding (equivalent to RoPE); no separate sinusoidal PE is needed
+
+## 🗂 Repository Layout
+
+```
+Waver-SNN-SSM/
+├── v1/          # early 1.6B training snapshots (312002proplus_elite)
+├── v2/          # 312003elite + controlled comparison vs. Transformer
+├── v3.1/        # unified matrix_exp real-matrix scan (312003elite)
+├── v4/          # Loop mechanism + chunked SSM scan (312004elite)
+├── v4.1/        # stability update + controlled comparison (310004elite)
+├── v4.2/        # jsonl memory-fragmentation fix (312004elite)
+├── v5/          # v5 data-format layer (312005elite / 312505elite)
+├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
+├── v7/          # training-step CUDA Graph + 8-bit AdamW (312007elite / 312507elite)
+├── compare/     # curated comparison results (plots + report + dashboard)
+├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
+├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
+└── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
+```
+
+**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL.
+
+## 📜 Version History
+
+| Version | Date | Highlights |
+|---|---|---|
+| 1.0.0 | 2026-09-05 | First public release: complex SSM as real 2×2 blocks, MoE-FFN, global summarizers, custom Blelloch parallel prefix scan |
+| 1.0.1 | 2026-09-05 | FastBPE per-token performance fix (`_vocab_size_cache`) |
+| 1.0.2 | 2026-09-05 | Lazy `brain.pt` loading; chat no longer triggers OOM |
+| 2.0.0 | 2026-09-09 | Performance & engineering: Blelloch padding fix, Ω eigendecomposition → diagonal complex scan, chunked linear attention, parallel prefill, CUDA Graph decoding, MoE dedicated copy stream / BF16 residency |
+| 3.1.0 | 2026-09-17 | Architecture refactor: unified `A_t = matrix_exp(δ_t·Ω_t)` real-matrix scan, removed the eig path, per-channel δ, data-dependent rotation `theta_delta` |
+| 4.0.0 | 2026-09-23 | Loop mechanism (weight-shared recurrent layers) + chunked SSM scan `SSM_CHUNK_SIZE` |
+| 4.1.0 | 2026-09-28 | Stability update + controlled comparison vs. a classic Transformer (coupling on/off) |
+| 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
+| 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
+| 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
+| **7.0.0** | **2026-10-10** | **Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches** |
+
+## 🚀 What's New in 7.0.0
+
+> v7 is the **training-side "lossless speedup + memory reduction"** release over v6 — every new switch is on by default, falls back automatically on failure, and stays mathematically bit-identical.
+
+- **Training-step CUDA Graph** `USE_TRAIN_STEP_CUDA_GRAPH`: captures the training step's **forward + backward** into a CUDA Graph (bucketed by sequence length via `TRAIN_GRAPH_BUCKET` / `TRAIN_GRAPH_MAX_GRAPHS`), eliminating ~100k kernel launches per step. `optimizer.step()` / `scheduler.step()` / gradient clipping stay outside the graph; active only on CUDA + non-MoE + batch=1, with automatic eager fallback on capture failure (**performance-only fallback; math unchanged**).
+- **8-bit AdamW** `USE_ADAMW8BIT`: switches the main optimizer to bitsandbytes `AdamW8bit` (8-bit momentum states), saving ~**36%** optimizer memory; automatically falls back to the file's native optimizer (Adafactor / AdamW) when unavailable or non-CUDA.
+- **Centralized matrix-exponential / graph switches** at the top of each file. Adds `USE_CAPTURABLE_EXPM` (K>2 uses "scaling-and-squaring + Taylor series", pure matmul/elementwise, no LAPACK, CUDA-Graph-capturable; **off by default**, K>2 falls back to `torch.linalg.matrix_exp`).
+- **Gradient checkpointing on by default**; loss scaling and `zero_grad(set_to_none=False)` adapted to the training graph.
+- Curated comparison experiments moved into `compare/`; README rewritten + new `CHANGELOG.md`.
+
+## 📖 Key Features
+
+- **Truly complex-free (Complex-to-Real 2×2 block isomorphism)**
+  Each complex entry `a+bi` becomes the real matrix `[[a, -b], [b, a]]`, so real/imaginary channels alternate naturally with **no complex intermediate tensors** — BF16 AMP is safe.
+- **Optional global summarizers (read/write heads)**
+  `Mean` / `LinearAttention` / `MiniWave` summarizers give the SSM explicit global information, compensating for its inherent context-compression limits.
+- **Flexible intra-layer coupling**
+  A learnable inter-subchannel coupling matrix (skew-Hermitian) is more expressive than Mamba's diagonal/scalar matrices.
+- **Full MoE integration with production-grade optimizations**
+  MoE-FFN (SwiGLU experts + Top-K routing) with expert offload, a dedicated copy stream, FP8 / NVFP4 / BF16 quantization, and weight normalization.
+- **Single file + all-config**
+  Training, inference and RL (GRPO) in one self-contained file; every hyperparameter is a top-of-file constant.
+- **Cross-platform stability**
+  Win11 / Linux / macOS; DataLoader with multiple workers works safely under the spawn start method.
+
+## ⚙️ Core Components
+
+### ParallelComplexWaveLayer
+The model core, replacing all complex-SSM operators with real 2×2 blocks:
+
+- State transition: `h_t = A_t @ h_{t-1} + b_t`
+- Single path: `A_t = matrix_exp(δ_t · Ω_t)`, where `Ω_t = M + diag(-ν + i·(θ_base + θ_delta_t))`
+- Parallel scan: a custom `BlellochScanFn` gives an O(log T) parallel prefix scan (parallel in both forward and backward)
+- Stability structurally guaranteed by the **Bendixson theorem** (`Re Ω < 0`), with no thresholds
+
+### Global Summarizer
+Selected via `SUMMARY_TYPE`:
+- `mean`: global average pooling (parameter-free baseline)
+- `linear_attention`: learnable linear-attention summary, chunked (`SUMMARY_CHUNK`) to avoid materializing large tensors
+- `mini_wave`: a miniature `ParallelComplexWaveLayer` with its own parameters
+
+### MoE-FFN
+SwiGLU mixture-of-experts:
+- `MOE_OFFLOAD`: expert weights can be offloaded to CPU and moved on demand
+- `_copy_stream`: a dedicated CUDA stream overlaps the transfer with compute
+- `MOE_EXPERT_QUANT`: FP8 (E4M3) training quantization, NVFP4 (E2M1) inference quantization, BF16 resident inference
+- `MOE_EXPERT_WNORM`: weight normalization to prevent training divergence
+
+## 📊 Comparison Experiments (with plots)
+
+Curated results and reproduction scripts live in [`compare/`](./compare/).
+
+### 1. Waver vs. a classic Transformer (v2 · ~9.5M params · 15.36M tokens)
+
+Strictly controlled: same vocab, same optimizer, same hyperparameters; the Transformer (9.48M) has slightly more parameters than Waver (9.29M), making the comparison conservative.
+
+| Training loss | Validation PPL |
+|---|---|
+| ![Waver vs Transformer loss](./v2/compare/test1/result/loss.png) | ![Waver vs Transformer ppl](./v2/compare/test1/result/ppl.png) |
+
+> Waver drops faster throughout training and reaches a lower final loss.
+
+### 2. Intra-layer coupling on / off (v2)
+
+![Coupling on/off](./v2/compare/test2nocoupling/compare_plots/loss.png)
+
+> In the later (overfitting) phase, the model **with coupling enabled** shows a small but consistent advantage.
+
+### 3. v4.1 controlled comparison (same vocab / optimizer / aligned parameter count)
+
+| Training loss | Validation PPL | Memory usage |
+|---|---|---|
+| ![v4.1 loss](./compare/v4.1/loss.png) | ![v4.1 ppl](./compare/v4.1/ppl.png) | ![v4.1 memory](./compare/v4.1/memory.png) |
+
+More curves (log / log-log axes, difference, learning rate, activity) are in [`compare/v4.1/`](./compare/v4.1/).
+
+### 4. v1 1.6B model — training overview
+
+![v1 overview](./v1/plots/overview.png)
+
+> With only ~17.9M tokens (far below the Chinchilla optimum), the 1.6B model brings loss from ~10 down to ~5 and PPL from ~49000 down to ~200 — strong evidence for the architecture.
+
+### 5. v6 low-precision + training-side speedup validation (RTX 5080 16GB)
+
+| Finding | Result |
+|---|---|
+| 8-bit AdamW stability | Max relative deviation of MON metrics < 3.4e-3 (bf16 quantization-noise level), no drift |
+| 8-bit AdamW memory | Optimizer memory **-35.7%** (421.7MB → 271.1MB) |
+| FP8 / NVFP4 expert quantization | NVFP4 inference saves **45.6%** memory with a 2e-4 relative logit error |
+| Training-step CUDA Graph | fwd+bwd capture **2.4–2.6×**; checkpointing off + capture ≈ **3.4×** total |
+
+Full report and probe scripts: [`compare/v6/`](./compare/v6/) and [`compare/README.md`](./compare/README.md).
+
+## 🔧 Usage
+
+The `.py` inside each version directory is the complete program — just run it and use the menu:
+
+```bash
+python v5/312005elite.py
+```
+
+All key parameters (model architecture, optimizer, data paths, MoE, memory optimizations, etc.) are defined as constants at the top of the file.
+
+---
+
+## 📜 Citation
+
+```bibtex
+@misc{zeng2026waversnnssm,
+  author = {Zeng, Naiqi},
+  title = {Waver-SNN-SSM: From Spiking Neurons to State Space Models},
+  year = {2026},
+  publisher = {Zenodo},
+  doi = {10.5281/zenodo.22309186},
+  url = {https://doi.org/10.5281/zenodo.22309186}
+}
+```
+
+## 📧 Contact
+- ORCID: [0009-0006-4332-1295](https://orcid.org/0009-0006-4332-1295)
+- Email: X005_0001_0001@163.com
+
+## 📄 License
+This project is licensed under the **GNU General Public License v3.0**. Any use, modification or distribution of this code must comply with GPL-3.0, i.e. any derivative work must also be open-sourced under GPL-3.0.
+
+## ⚠️ Copyright
+Copyright © 2026 Naiqi Zeng. All rights reserved.
+The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
+
+Version: 7.0.0
 Last Updated: 2026-10-10

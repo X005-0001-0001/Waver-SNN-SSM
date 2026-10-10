@@ -2,7 +2,25 @@
 
 本项目所有值得注意的变更都记录在此文件。版本号遵循 `主版本.次版本.修订号`。
 
-> 说明：`v1.x` 为早期补丁版本（保留 `v` 前缀）；`2.0.0` 起改为纯数字版本号。
+> 说明：版本号统一使用纯数字三段式 `主版本.次版本.修订号`（如 `1.0.0`），不使用 `v` 前缀。
+
+---
+
+## 7.0.0 — 2026-10-10
+
+> 定位：v6 的训练侧「无损加速 + 降显存」版本 —— 所有新增开关默认启用、失败自动回退、数学逐位一致。
+
+### 新增
+- **训练步 CUDA Graph** `USE_TRAIN_STEP_CUDA_GRAPH`：把训练步 fwd + bwd 抓成 CUDA Graph，按序列长度分桶缓存（`TRAIN_GRAPH_BUCKET` / `TRAIN_GRAPH_MAX_GRAPHS`）；`optimizer.step()` / `scheduler.step()` / 梯度裁剪留在图外；仅 CUDA + 非 MoE + batch=1 生效，失败自动回退 eager。
+- **8-bit AdamW** `USE_ADAMW8BIT`：主训练优化器改用 bitsandbytes `AdamW8bit`，约省 **36%** 优化器显存；不可用 / 非 CUDA 时自动回退原生优化器。
+- **可捕获矩阵指数** `USE_CAPTURABLE_EXPM`：K>2 走「缩放-平方 + Taylor 级数」，纯 matmul / 逐元素、无 LAPACK，可被 CUDA Graph 捕获（**默认关闭**，K>2 默认回退 `torch.linalg.matrix_exp`）。
+
+### 变更
+- 矩阵指数 / 抓图相关开关集中到文件头部，便于统一开关。
+- 梯度检查点默认开启；loss 缩放与 `zero_grad(set_to_none=False)` 适配训练图。
+
+### 其他
+- 精简对照实验纳入 `compare/`；README 重写为 v7 级并新增本 `CHANGELOG.md`。
 
 ---
 
@@ -93,21 +111,21 @@
 
 ---
 
-## v1.0.2 — 2026-09-05
+## 1.0.2 — 2026-09-05
 
 ### 修复
 - `brain.pt` 惰性加载：启动不再 `torch.load`，菜单 1/2/4/7-9 接入惰性加载守卫，聊天不再触发 OOM。
 
 ---
 
-## v1.0.1 — 2026-09-05
+## 1.0.1 — 2026-09-05
 
 ### 修复
 - FastBPE 逐 token 性能问题：新增 `_vocab_size_cache`，`encode()` 改用缓存，消除循环内 `get_vocab_size()` 调用。
 
 ---
 
-## v1.0.0 — 2026-09-05
+## 1.0.0 — 2026-09-05
 
 ### 首次公开发布
 - `ParallelComplexWaveLayer`：复值 SSM 实值化 2×2 块同构（无复数中间量）。
