@@ -9,7 +9,7 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`7.0.3`（2026-10-11）** —— 修复 CUDA Graph 解码 × AMP 的生成崩溃（承接 7.0.2 的切分/日志补丁与 7.0.0 的训练步 CUDA Graph + 8-bit AdamW）。
+> **当前最新 / Latest：`7.1.0`（2026-10-11）** —— 新增 017 变体：相位基频 θ 的结构性上界参数化 `θ = π·sigmoid(theta_raw)`（承接 7.0.3 的生成崩溃修复）。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -58,14 +58,14 @@ Waver-SNN-SSM/
 ├── v4.2/        # jsonl 显存碎片修复（312004elite）
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
-├── v7/          # 训练步 CUDA Graph + 8-bit AdamW（312007elite / 312507elite）
+├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界（312007elite / 312017elite / 312507elite / 3125017elite）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。
+**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）。
 
 ## 📜 版本历史
 
@@ -81,12 +81,21 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **7.0.3** | **2026-10-11** | **修复 CUDA Graph 解码 × AMP 生成崩溃（autocast 缓存冲突）** |
+| **7.1.0** | **2026-10-11** | **017 变体：相位基频 θ 结构性上界 `θ = π·sigmoid(theta_raw)`** |
+| 7.0.3 | 2026-10-11 | 修复 CUDA Graph 解码 × AMP 生成崩溃（autocast 缓存冲突） |
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
 
-## 🚀 7.0.3 核心变更
+## 🚀 7.1.0 核心变更
+
+> 定位：v7 的**结构性稳定性分支** —— 在 007 基础上派生 **017 变体**，把相位基频 θ 的 `exp` 参数化改为**结构性上界** `θ = π·sigmoid(theta_raw)`；不改动模型结构 / 优化器 / 数值路径（开关关闭时与 007 逐位一致）。
+
+- **θ 结构性上界开关** `THETA_STRUCTURAL_BOUND_ENABLED`（**默认开启**）：物理来源是离散旋转的非混叠（Nyquist）约束 `δ·θ < π` ⇒ 基频 θ 应落在 `(0, π)`。参数化 `θ = π·sigmoid(theta_raw)` **处处可导、无梯度死区、渐近逼近 π 而不真正触界**；替代原生 `θ = exp(theta_raw)`（无上界，θ 可漂移至任意大 → 相位自激）。置 `False` 回退原生 `exp` 参数化，与 007 **逐位一致**。
+- **初始化一致**：结构性上界下反解 `theta_raw`，使初始 θ 分布与原生 log-uniform 完全一致（往返误差 ~1e-16）。
+- **017 变体**：ultra3 的 6 个 007 文件（`210/212/2125/310/312/3125`）各派生一个 017；本次 release 发布主族 `312017elite.py` 与 x25 族 `3125017elite.py`，同时保留 `312007elite.py` / `312507elite.py` 供对照。
+
+### 7.0.3 生成路径正确性补丁
 
 > 定位：v7 的**生成路径正确性补丁** —— 修复启用 `USE_CUDA_GRAPH_DECODE` 时，菜单 2 对话在 AMP（bf16）下生成若干步后崩溃的问题；不改动模型结构 / 优化器 / 数值路径。
 
@@ -287,14 +296,14 @@ Waver-SNN-SSM/
 ├── v4.2/        # jsonl memory-fragmentation fix (312004elite)
 ├── v5/          # v5 data-format layer (312005elite / 312505elite)
 ├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
-├── v7/          # training-step CUDA Graph + 8-bit AdamW (312007elite / 312507elite)
+├── v7/          # training-step CUDA Graph + 8-bit AdamW + θ structural bound (312007elite / 312017elite / 312507elite / 3125017elite)
 ├── compare/     # comparison: round3 figure set + v6 report + dashboards
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL.
+**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default).
 
 ## 📜 Version History
 
@@ -310,12 +319,21 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **7.0.3** | **2026-10-11** | **Fix CUDA Graph decoding × AMP generation crash (autocast-cache conflict)** |
+| **7.1.0** | **2026-10-11** | **017 variant: structural upper bound on the base phase θ, `θ = π·sigmoid(theta_raw)`** |
+| 7.0.3 | 2026-10-11 | Fix CUDA Graph decoding × AMP generation crash (autocast-cache conflict) |
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
 
-## 🚀 What's New in 7.0.3
+## 🚀 What's New in 7.1.0
+
+> v7.1.0 is the **structural-stability branch** of v7 — it derives an **017 variant** from 007, replacing the base-phase `exp` parameterization with a **structural upper bound** `θ = π·sigmoid(theta_raw)`; the model architecture, optimizers and numerical paths are untouched (with the switch off it is bit-identical to 007).
+
+- **θ structural-bound switch** `THETA_STRUCTURAL_BOUND_ENABLED` (**on by default**): its physical origin is the anti-aliasing (Nyquist) condition of the discrete rotation `δ·θ < π` ⇒ the base phase θ should live in `(0, π)`. The parameterization `θ = π·sigmoid(theta_raw)` is **everywhere differentiable, has no gradient dead zone, and approaches π asymptotically without ever reaching it**; it replaces the native `θ = exp(theta_raw)` (unbounded — θ can drift to arbitrarily large values → phase self-excitation). Set it to `False` to fall back to the native `exp` parameterization, **bit-identical to 007**.
+- **Consistent initialization**: under the structural bound, `theta_raw` is inverted so the initial θ distribution matches the native log-uniform exactly (round-trip error ~1e-16).
+- **017 variant**: each of the 6 ultra3 007 files (`210/212/2125/310/312/3125`) derives an 017; this release ships the main family `312017elite.py` and the x25 family `3125017elite.py`, while keeping `312007elite.py` / `312507elite.py` for comparison.
+
+### 7.0.3 generation-path correctness patch
 
 > v7.0.3 is a **generation-path correctness patch** over v7.0.2 — it fixes a crash in menu 2 chat under AMP (bf16) when `USE_CUDA_GRAPH_DECODE` is enabled; the model architecture, optimizers and numerical paths are untouched.
 
@@ -471,5 +489,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 7.0.3
+Version: 7.1.0
 Last Updated: 2026-10-11
