@@ -194,7 +194,7 @@ SwiGLU 混合专家：
 
 ## 📊 对照实验（含图）
 
-全部结果由 `对照测试/` 的原始训练日志**重新解析生成**，复现脚本与完整图集见 [`compare/`](./compare/)。
+全部结果由 `对照测试/` 的原始训练日志**重新解析生成**；**共 60 组实验，每条一行、附数据结论的完整对照矩阵**见 [`compare/README.md`](./compare/README.md)，图集见 [`compare/`](./compare/)。
 统一条件：**同词表 / 同优化器 / 同超参数**，`H=256, L=3, T=2048, batch=1, lr=1e-3`，约 8.9 万步。
 
 ### 1. 第 3 轮受控对照：Waver / x25 vs 经典 Transformer
@@ -215,14 +215,22 @@ SwiGLU 混合专家：
 
 > Waver 的验证 PPL 在 5 个 seed 上**高度稳定**（31.1–31.6），Transformer 波动明显更大（22.3–30.0）。
 
-**消融与扫描**（完整 14 图见 [`compare/round3/`](./compare/round3/)）：
+**消融与扫描**（完整 15 图见 [`compare/round3/`](./compare/round3/)）：
 
 | 学习率扫描（Waver） | 层内耦合系数消融 | 状态维度 K=4 |
 |---|---|---|
 | ![lr scan](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_lr_waver.png) | ![coupling](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_coupling.png) | ![k4](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_state_dim_k4.png) |
 
-> `lr=8e-3` 时明显恶化（印证复值 SSM 对过高学习率的敏感性）；完全去掉层内耦合后 loss 抬升约 0.05，耦合系数过大（2.718）同样变差——**适度耦合最优**。
-> 其余消融：Loop 循环层、h368 更宽隐藏层、Warmup、摘要器 dk、10 万条数据 —— 详见目录。
+> `lr=8e-3` 时明显恶化并提前中断（印证复值 SSM 对过高学习率的敏感性）；耦合系数消融的 ValPPL 极差仅 0.65（过大或完全无耦合略差）。
+> 其余消融：Loop 循环层、h368 更宽隐藏层、Warmup、摘要器 dk、10 万条数据 —— 详见对照矩阵。
+
+**全实验总览**（全部 55 个 round3/100k run 的训练曲线 + 最优 ValPPL 排序）：
+
+| 训练 Loss 小图总览 | 最优验证 PPL 排序 | 多 seed 稳定性 |
+|---|---|---|
+| ![matrix loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/matrix/matrix_loss_all.png) | ![matrix valppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/matrix/matrix_valppl.png) | ![matrix seed](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/matrix/matrix_seed_variance.png) |
+
+> 多 seed 实测：最优 ValPPL 的跨 seed 标准差 —— Transformer H256 **±2.89**、Waver H256 **±0.19**、x25 H256 **±0.24**（Waver/x25 方差低约一个数量级，但绝对 PPL 水平更高）。
 
 ### 2. v1 1.6B 模型训练总览
 
@@ -458,7 +466,7 @@ SwiGLU mixture-of-experts:
 
 ## 📊 Comparison Experiments (with plots)
 
-All results are **re-parsed from the raw training logs** under `对照测试/`; reproduction scripts and the full figure set live in [`compare/`](./compare/).
+All results are **re-parsed from the raw training logs** under `对照测试/`; the **full comparison matrix — 60 runs, one row each with a data-backed conclusion — is in [`compare/README.md`](./compare/README.md)**, figure set in [`compare/`](./compare/).
 Unified setting: **same vocab / same optimizer / same hyperparameters**, `H=256, L=3, T=2048, batch=1, lr=1e-3`, ~89k steps.
 
 ### 1. Round-3 controlled comparison: Waver / x25 vs. a classic Transformer
@@ -479,14 +487,22 @@ Three-panel figure (training loss · validation PPL · loss diff vs. baseline):
 
 > Waver's validation PPL is **highly stable** across 5 seeds (31.1–31.6), while the Transformer swings much more (22.3–30.0).
 
-**Ablations & sweeps** (full 14 figures in [`compare/round3/`](./compare/round3/)):
+**Ablations & sweeps** (full 15 figures in [`compare/round3/`](./compare/round3/)):
 
 | LR sweep (Waver) | Intra-layer coupling | State dim K=4 |
 |---|---|---|
 | ![lr scan](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_lr_waver.png) | ![coupling](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_coupling.png) | ![k4](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/round3/round3_state_dim_k4.png) |
 
-> `lr=8e-3` clearly degrades (confirming the complex-valued SSM's sensitivity to too-high LR); removing intra-layer coupling raises loss by ~0.05, and an over-large coupling (2.718) also hurts — **moderate coupling is best**.
-> Other ablations: Loop layers, wider h368, Warmup, summarizer dk, 100k data — see the directory.
+> `lr=8e-3` clearly degrades and aborts early (confirming the complex-valued SSM's sensitivity to too-high LR); the coupling ablation spans only 0.65 PPL (over-large or fully-removed coupling is slightly worse).
+> Other ablations: Loop layers, wider h368, Warmup, summarizer dk, 100k data — see the comparison matrix.
+
+**All-experiment overview** (train curves of all 55 round3/100k runs + best-ValPPL ranking):
+
+| Train-loss small multiples | Best validation PPL ranking | Multi-seed stability |
+|---|---|---|
+| ![matrix loss](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/matrix/matrix_loss_all.png) | ![matrix valppl](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/matrix/matrix_valppl.png) | ![matrix seed](https://x005-0001-0001.github.io/Waver-SNN-SSM/compare/matrix/matrix_seed_variance.png) |
+
+> Multi-seed (measured): std of best ValPPL — Transformer H256 **±2.89**, Waver H256 **±0.19**, x25 H256 **±0.24** (Waver/x25 variance is ~one order of magnitude lower, at a higher absolute PPL level).
 
 ### 2. v1 1.6B model — training overview
 
