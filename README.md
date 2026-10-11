@@ -9,7 +9,7 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`7.2.0`（2026-10-11）** —— 新增 008 变体：回退 017 的 θ 结构性上界，改用 **δ 下限** 直击无遗忘积分器与 amp 自激（承接 7.1.0 的 017 变体）。
+> **当前最新 / Latest：`8.0.0`（2026-10-11）** —— 新增 009 变体：注入端**遗忘平衡** `B̄ = B̃·(1−|A|)`，结构上锁定峰值增益 `G_peak ≡ |B̃|`，消除慢极点（ν→0）直流增益爆炸（承接 7.2.0 的 008 变体）。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -59,13 +59,14 @@ Waver-SNN-SSM/
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界 / δ 下限（312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite）
+├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）。
+**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）；v8.0.0 起增设 `009` 变体（遗忘平衡注入，峰值增益结构性有界，默认开启）。
 
 ## 📜 版本历史
 
@@ -81,12 +82,27 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **7.2.0** | **2026-10-11** | **008 变体：回退 θ 结构性上界 + 新增 δ 下限（治无遗忘积分器 / amp 自激）** |
+| **8.0.0** | **2026-10-11** | **009 变体：遗忘平衡注入 `B̄ = B̃·(1−|A|)`，峰值增益 `G_peak ≡ |B̃|` 结构性有界** |
+| 7.2.0 | 2026-10-11 | 008 变体：回退 θ 结构性上界 + 新增 δ 下限（治无遗忘积分器 / amp 自激） |
 | 7.1.0 | 2026-10-11 | 017 变体：相位基频 θ 结构性上界 `θ = π·sigmoid(theta_raw)` |
 | 7.0.3 | 2026-10-11 | 修复 CUDA Graph 解码 × AMP 生成崩溃（autocast 缓存冲突） |
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 8.0.0 核心变更
+
+> 定位：v8 的**动力学稳定性分支（注入端结构性修法）** —— 在 007 基础上派生 **009 变体**：把注入项从 **ZOH 连续积分** 改为 **遗忘平衡注入** `B̄ = B̃·(1−|A|)`，使**峰值增益** `G_peak ≡ |B̃|`（对 δ/ν/θ 恒定有界），从结构上消除慢极点（ν→0）的直流增益爆炸。不改动模型结构 / 优化器 / 数值路径（`GAIN_NORM_ENABLED=False` 时与 007 逐位一致）。
+
+- **峰值增益病灶**：标量复递推 `h_t = A·h_{t−1} + B̄·x_t` 的峰值增益为 `G_peak = |B̄|/(1−|A|)`（单位圆到 A 最近距离的倒数）。旧 ZOH 注入 `B̄ = B·(e^{δγ}−1)/γ = B·(1−A)/γ` 给出 `G_peak = |B|/|γ| · |1−A|/(1−|A|)`，在 `ν→0`（`1−|A|→0`）或 `|γ|→0` 时**无界** —— 慢极点会把直流增益放大到任意大。
+- **遗忘平衡注入开关** `GAIN_NORM_ENABLED`（**默认开启**）：新规则 `B̄ = B̃·(1−|A|)`，其中 `B̃ = B_real·B_scale`（原可学习系数，不动），`|A| = e = exp(−δν)`。于是 `G_peak ≡ |B̃|`，**对任意 δ/ν/θ 恒定有界**。数值验证：小 ν 通道旧式 `G_peak` 可达 ~175，新式恒等于 `|B̃|`（误差 ~1e-7，float32）。
+- **重参数化而非截断**：任意目标 `B̄` 可由 `B̃ = B̄/(1−|A|)` 精确表示（δ>0、ν>0 严格 ⇒ `0 < 1−|A| ≤ 1`，无除零），**可达集合与 007 完全相同**；实现为纯乘加、无开方无除法，梯度安全。
+- **009 变体**：ultra3 的 6 个 007 文件（`210/212/2125/310/312/3125`）各派生一个 009；本次 release 发布主族 `312009elite.py` 与 x25 族 `3125009elite.py`，同时保留 007 供对照（009 = 007 + 遗忘平衡注入）。
+- **旗舰版同步**：旗舰版 312007 派生 `312009elite.py`（= 旗舰版 312007 + 遗忘平衡注入；梯度累积 / 裁剪 / LR 全部不动）。
+
+### 破坏性变更与边界
+- 开关开启后，加载旧 007 checkpoint 的前向输出**不再逐位一致**（注入公式已改变）；如需与 007 严格对照，置 `GAIN_NORM_ENABLED=False` 即可**逐位回退**。
+- **对训练收敛的影响待验证**：本变体由「峰值增益结构性有界」这一**数学恒等**支撑（已数值验证 `G_peak ≡ |B̃|`）；但其对病态 PPL 收敛的长期效果**尚未经实验证实** —— 先前对照实验中把增益压制 ~160×，在 200 步续训窗口内均未观察到 PPL 同步改善。**请勿解读为「已修复 PPL 震荡」。**
 
 ## 🚀 7.2.0 核心变更
 
@@ -230,7 +246,7 @@ SwiGLU 混合专家：
 每个版本目录下的 `.py` 即为完整程序，直接运行进入菜单：
 
 ```bash
-python v7/312007elite.py
+python v8/312009elite.py
 ```
 
 所有关键参数（模型结构、优化器、数据路径、MoE、显存优化等）均在文件头部集中定义。
@@ -307,13 +323,14 @@ Waver-SNN-SSM/
 ├── v5/          # v5 data-format layer (312005elite / 312505elite)
 ├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
 ├── v7/          # training-step CUDA Graph + 8-bit AdamW + θ structural bound / δ floor (312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite)
+├── v8/          # forget-balanced injection · structurally bounded peak gain (312009elite / 3125009elite)
 ├── compare/     # comparison: round3 figure set + v6 report + dashboards
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default).
+**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default); from v8.0.0 it adds a `009` variant (forget-balanced injection, structurally bounded peak gain, on by default).
 
 ## 📜 Version History
 
@@ -329,12 +346,27 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **7.2.0** | **2026-10-11** | **008 variant: θ structural bound reverted + new δ floor (fixes the forgetless integrator / amp self-excitation)** |
+| **8.0.0** | **2026-10-11** | **009 variant: forget-balanced injection `B̄ = B̃·(1−|A|)`, peak gain `G_peak ≡ |B̃|` structurally bounded** |
+| 7.2.0 | 2026-10-11 | 008 variant: θ structural bound reverted + new δ floor (fixes the forgetless integrator / amp self-excitation) |
 | 7.1.0 | 2026-10-11 | 017 variant: structural upper bound on the base phase θ, `θ = π·sigmoid(theta_raw)` |
 | 7.0.3 | 2026-10-11 | Fix CUDA Graph decoding × AMP generation crash (autocast-cache conflict) |
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 8.0.0
+
+> v8.0.0 is the **dynamics-stability branch** of v8 (an injection-side structural fix) — it derives an **009 variant** from 007: it replaces the injection term from **ZOH continuous integration** with **forget-balanced injection** `B̄ = B̃·(1−|A|)`, so that the **peak gain** `G_peak ≡ |B̃|` (constant and bounded for any δ/ν/θ), structurally eliminating the DC-gain blow-up of slow poles (ν→0). The model architecture, optimizers and numerical paths are untouched (with `GAIN_NORM_ENABLED=False` it is bit-identical to 007).
+
+- **The peak-gain pathology**: for the scalar complex recursion `h_t = A·h_{t−1} + B̄·x_t`, the peak gain is `G_peak = |B̄|/(1−|A|)` (the reciprocal of the unit circle's distance to A). The old ZOH injection `B̄ = B·(e^{δγ}−1)/γ = B·(1−A)/γ` gives `G_peak = |B|/|γ| · |1−A|/(1−|A|)`, which is **unbounded** as `ν→0` (`1−|A|→0`) or `|γ|→0` — slow poles can amplify the DC gain without limit.
+- **Forget-balanced injection switch** `GAIN_NORM_ENABLED` (**on by default**): the new rule `B̄ = B̃·(1−|A|)`, with `B̃ = B_real·B_scale` (the original learnable coefficients, untouched) and `|A| = e = exp(−δν)`. Hence `G_peak ≡ |B̃|`, **constant and bounded for any δ/ν/θ**. Numerically verified: for small-ν channels the old form reaches `G_peak ≈ 175` while the new form exactly equals `|B̃|` (error ~1e-7, float32).
+- **Reparameterization, not truncation**: any target `B̄` is exactly representable via `B̃ = B̄/(1−|A|)` (δ>0 and ν>0 strictly ⇒ `0 < 1−|A| ≤ 1`, no division by zero), so the **reachable set is identical to 007**; it is pure multiply-add with no sqrt and no division, hence gradient-safe.
+- **009 variant**: each of the 6 ultra3 007 files (`210/212/2125/310/312/3125`) derives an 009; this release ships the main family `312009elite.py` and the x25 family `3125009elite.py`, while keeping 007 for comparison (009 = 007 + forget-balanced injection).
+- **Flagship sync**: the flagship 312007 derives `312009elite.py` (= flagship 312007 + forget-balanced injection; gradient accumulation / clipping / LR all untouched).
+
+### Breaking change & scope
+- With the switch on, loading an old 007 checkpoint gives forward outputs that are **no longer bit-identical** (the injection formula changed); set `GAIN_NORM_ENABLED=False` for a **bit-exact fallback** to 007.
+- **Effect on training convergence is unverified**: this variant is backed by the **mathematical identity** of "structurally bounded peak gain" (verified numerically as `G_peak ≡ |B̃|`); its long-term effect on the pathological PPL has **not** been established experimentally — in earlier controlled runs the gain was suppressed ~160× yet no concurrent PPL improvement was observed within a 200-step continuation window. **Do not read this as "the PPL oscillation is fixed".**
 
 ## 🚀 What's New in 7.2.0
 
@@ -478,7 +510,7 @@ Full report and probe scripts: [`compare/v6/`](./compare/v6/) and [`compare/READ
 The `.py` inside each version directory is the complete program — just run it and use the menu:
 
 ```bash
-python v7/312007elite.py
+python v8/312009elite.py
 ```
 
 All key parameters (model architecture, optimizer, data paths, MoE, memory optimizations, etc.) are defined as constants at the top of the file.
@@ -509,5 +541,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 7.2.0
+Version: 8.0.0
 Last Updated: 2026-10-11
