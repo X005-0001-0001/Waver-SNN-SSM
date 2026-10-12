@@ -6,6 +6,33 @@
 
 ---
 
+## 9.0.0 — 2026-10-12
+
+> 定位：在 009（**含 8.1.1 初始化修复**）基础上派生 **0010 变体** —— 新增**多 token 预测（MTP, Multi-Token Prediction）**：用**共享 `output_norm`** 输出的多个轻量头监督同一隐状态 `norm_last`，主头预测 t+1、MTP 头预测 t+2，以**多时间尺度**目标打破「h 恒定即可最小化 loss」的死通道。**仅追加辅助监督项**，主头结构 / 数学路径不变（`MTP_LOSS_SCALING=0` 或 `MTP_NUM_HEADS≤1` 时与 009 逐位一致）。
+
+### 新增
+- **MTP 开关与超参数**（文件头集中定义，独立可关，默认开启）：
+  - `MTP_NUM_HEADS`（默认 `2`）：总头数（含主头）。
+  - `MTP_PREDICT_DISTANCES`（默认 `[1, 2]`）：主头预测 t+1、MTP 头预测 t+2；长度须等于 `MTP_NUM_HEADS`。
+  - `MTP_LOSS_SCALING`（默认 `0.1`）：MTP 辅助 loss 总缩放；`0` 即关闭。
+- **`MTPHead`**：`Linear(hidden→hidden, bias=False) → RMSNorm → Linear(hidden→vocab, bias=False)`，**从共享 `norm_last` 出发、不新增独立主 norm**（与主头共用 `output_norm`）。
+- **`_mtp_loss`**：对每个 MTP 头按 `head.distance` 平移标签、`ignore_index=-100` 掩码，逐头 `F.cross_entropy(reduction="sum")` 后按**有效 token 数归一**，多头取均值；`seq_len ≤ shift` 的头跳过。
+- **训练分支**：主导出后追加 `loss = loss + MTP_LOSS_SCALING * self._mtp_loss(norm_last, labels, seq_len)`。
+- **0010 变体**：ultra3 的 12 个 009 文件（6 elite + 6 elitelinux）各派生一个 0010；旗舰版 `0.85B1/312009elitelinux.py` 派生 `3120010elitelinux.py`；本次 release 发布主族 `3120010elite.py` 与 x25 族 `31250010elite.py`，及其对应 linux 变体。
+
+### 修复
+- **语义修正（相对原始草案）**：因 `labels[t] = input_ids[t+1]`，草案的 `mtp_labels[:, :seq_len - distance] = labels[:, distance:]` 实际会预测 t+distance+1（**越一位**）；0010 取 `shift = distance − 1`，使 `distance=2` 精确预测 t+2，符合「预测距离 [1,2]」的设计意图。
+
+### 实现要点
+- **CUDA Graph 兼容**：`_mtp_loss` **不做任何 device→host 同步**（不用 `int()` / `.item()`），`seq_len` 为 Python int，仅用 `valid.sum().clamp(min=1)`，全程留在图内 ⇒ 训练步 CUDA Graph 可捕获。
+- **两族实现一致**：linux 族 MTP 未复用 `_linux_lm_head`（避免 dummy `logit_scale` 与两族代码分叉），改用 eager `F.cross_entropy`。
+
+### 边界与注意
+- **关闭即等价（理论可推）**：`MTP_LOSS_SCALING=0`（或 `MTP_NUM_HEADS≤1`）时 MTP 头不实例化、辅助项不计入 ⇒ 前向与 009 逐位一致。
+- ⚠️ **效果未实测（未验证）**：本版只声称「MTP 结构已按设计接入、开关可关、训练图可捕获」，**不声称**已改善 PPL / 收敛 / 死通道 —— 其对训练的实际收益**尚未经实验证实**。显存 / 速度的理论增量（每头约 `2·H² + 2·H·V` 参数）亦**未实测**。
+
+---
+
 ## 8.1.1 — 2026-10-12
 
 > 定位：009 系列的**初始化修复**（**仅改初始值**，不改数学路径 / 结构 / 优化器）。修复「SSM 从未激活」的初始化死锁：从零训练时 loss 恒等于随机基线、SSM 内部参数无梯度。

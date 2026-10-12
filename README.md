@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`8.1.1`（2026-10-12）** —— **009 系列初始化修复**：修正并行复波层 `delta_scale`（−2.5→−1.0）/ `B_scale`（0.0→1.0）初值与 `delta_linear` / `B_linear` 的 weight_norm 初始化增益（0.1→1.0），解除「δ 小 → 注入小 → 梯度小」的初始化锁死。**仅改初始值，数学路径不变。**
+> **当前最新 / Latest：`9.0.0`（2026-10-12）** —— **0010 多 token 预测（MTP）**：在 009（含 8.1.1 初始化修复）基础上派生 **0010 变体**，用**共享 `output_norm`** 的多头监督（主头预测 t+1、MTP 头预测 t+2）给共享隐状态 `norm_last` 施加多时间尺度目标，从结构上打破「h 恒定即可最小化 loss」的死通道。**仅追加辅助监督项，主头数学路径不变；`MTP_LOSS_SCALING=0` 时与 009 逐位一致。**
 
-> 上一版 / Previous：`8.1.0`（2026-10-12）—— 009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致。
+> 上一版 / Previous：`8.1.1`（2026-10-12）—— 009 系列初始化修复：修正 `delta_scale`（−2.5→−1.0）/ `B_scale`（0.0→1.0）初值与 `delta_linear`/`B_linear` 的 weight_norm 增益（0.1→1.0），解除「δ 小 → 注入小 → 梯度小」的初始化锁死。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -62,13 +62,14 @@ Waver-SNN-SSM/
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界 / δ 下限（312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite）
 ├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）+ Linux 单卡加速（312009elitelinux / 3125009elitelinux）+ 初始化修复（8.1.1）
+├── v9/          # 0010 多 token 预测（MTP，共享 output_norm 多头监督）（3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）；v8.0.0 起增设 `009` 变体（遗忘平衡注入，峰值增益结构性有界，默认开启）；v8.1.0 起增设 `009elitelinux` 变体（Linux 单卡编译加速 + 多进程数据加载，独立可关，默认开启；全关时与对应 009 逐位一致）。
+**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）；v8.0.0 起增设 `009` 变体（遗忘平衡注入，峰值增益结构性有界，默认开启）；v8.1.0 起增设 `009elitelinux` 变体（Linux 单卡编译加速 + 多进程数据加载，独立可关，默认开启；全关时与对应 009 逐位一致）；v9.0.0 起增设 `0010` 变体（多 token 预测 MTP，共享 `output_norm` 多头监督，独立可关，默认开启；关闭时与对应 009 逐位一致）。
 
 ## 📜 版本历史
 
@@ -84,7 +85,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **8.1.1** | **2026-10-12** | **009 初始化修复：`delta_scale` −2.5→−1.0、`B_scale` 0.0→1.0、`delta_linear`/`B_linear` 的 weight_norm gain 0.1→1.0，修复「SSM 从未激活」** |
+| **9.0.0** | **2026-10-12** | **0010 多 token 预测（MTP）：共享 `output_norm` 多头监督（主头 t+1 / MTP 头 t+2），多时间尺度目标打破「h 恒定」死通道；独立可关，`MTP_LOSS_SCALING=0` 时与 009 逐位一致** |
+| 8.1.1 | 2026-10-12 | 009 初始化修复：`delta_scale` −2.5→−1.0、`B_scale` 0.0→1.0、`delta_linear`/`B_linear` 的 weight_norm gain 0.1→1.0，修复「SSM 从未激活」 |
 | 8.1.0 | 2026-10-12 | 009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致 |
 | 8.0.0 | 2026-10-11 | 009 变体：遗忘平衡注入 `B̄ = B̃·(1−|A|)`，峰值增益解耦恒等 `G_peak ≡ |B̃|`、耦合有界（≲3.5×） |
 | 7.2.0 | 2026-10-11 | 008 变体：回退 θ 结构性上界 + 新增 δ 下限（治无遗忘积分器 / amp 自激） |
@@ -93,6 +95,24 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 9.0.0 核心变更
+
+> 定位：在 009（**含 8.1.1 初始化修复**）基础上派生 **0010 变体** —— 新增**多 token 预测（MTP, Multi-Token Prediction）**：用**共享 `output_norm`** 输出的多个轻量头监督同一隐状态 `norm_last`，主头预测 t+1、MTP 头预测 t+2，以**多时间尺度**目标打破「h 恒定即可最小化 loss」的死通道。**仅追加辅助监督项**，主头结构 / 数学路径不变（`MTP_LOSS_SCALING=0` 或 `MTP_NUM_HEADS≤1` 时与 009 逐位一致）。
+
+- **动机**：8.1.1 解除了初始化锁死，但共享隐状态仍可能退化为**近常数** —— 若 `h` 对所有 t 恒定，主头可仅靠输出偏置把 loss 压到某基线，梯度对 `h` 的依赖趋零（死通道）。MTP 通过预测**不同未来步**（t+1 与 t+2）迫使 `h` 编码更细的时间结构，从结构上抬高对 `h` 的梯度。
+- **开关与超参数**（文件头集中定义，独立可关，默认开启）：
+  - `MTP_NUM_HEADS`（默认 `2`）：总头数（含主头）。
+  - `MTP_PREDICT_DISTANCES`（默认 `[1, 2]`）：主头预测 t+1、MTP 头预测 t+2；长度须等于 `MTP_NUM_HEADS`。
+  - `MTP_LOSS_SCALING`（默认 `0.1`）：MTP 辅助 loss 总缩放；`0` 即关闭。
+- **实现**：`MTPHead`（`Linear → RMSNorm → Linear`，**从共享 `norm_last` 出发、不新增独立主 norm**）；`_mtp_loss` 对每个 MTP 头按 `distance` 平移标签、用 `ignore_index=-100` 掩码，逐头交叉熵按**有效 token 数归一**后取均值；训练分支在主导出后追加 `loss = loss + MTP_LOSS_SCALING * self._mtp_loss(...)`。
+- **CUDA Graph 兼容**：`_mtp_loss` **不做任何 device→host 同步**（不用 `int()` / `.item()`），`seq_len` 为 Python int，仅用 `valid.sum().clamp(min=1)`，全程留在图内 ⇒ 训练步 CUDA Graph 可捕获。
+- **语义修正（相对原始草案）**：因 `labels[t] = input_ids[t+1]`，草案的 `labels[:, distance:]` 实际会预测 t+distance+1（**越一位**）；0010 取 `shift = distance − 1`，使 `distance=2` 精确预测 t+2，符合「预测距离 [1,2]」的设计意图。
+- **0010 变体**：ultra3 的 12 个 009 文件（6 elite + 6 elitelinux）各派生一个 0010；旗舰版 `0.85B1/312009elitelinux.py` 派生 `3120010elitelinux.py`；本次 release 发布主族 `3120010elite.py` 与 x25 族 `31250010elite.py`，及其对应 linux 变体。
+
+### 验证与边界
+- **关闭即等价（理论可推）**：`MTP_LOSS_SCALING=0`（或 `MTP_NUM_HEADS≤1`）时 MTP 头不实例化、辅助项不计入 ⇒ 前向与 009 逐位一致。
+- ⚠️ **效果未实测**：本版只声称「MTP 结构已按设计接入、开关可关、训练图可捕获」，**不声称**已改善 PPL / 收敛 / 死通道 —— 其对训练的实际收益**尚未经实验证实**。
 
 ## 🚀 8.1.1 核心变更
 
@@ -368,13 +388,14 @@ Waver-SNN-SSM/
 ├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
 ├── v7/          # training-step CUDA Graph + 8-bit AdamW + θ structural bound / δ floor (312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite)
 ├── v8/          # forget-balanced injection · structurally bounded peak gain (312009elite / 3125009elite) + Linux single-GPU accel (312009elitelinux / 3125009elitelinux)
+├── v9/          # 0010 multi-token prediction (MTP, shared output_norm multi-head supervision) (3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux)
 ├── compare/     # comparison: round3 figure set + v6 report + dashboards
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default); from v8.0.0 it adds a `009` variant (forget-balanced injection, structurally bounded peak gain, on by default); from v8.1.0 it adds a `009elitelinux` variant (Linux single-GPU compile acceleration + multiprocess data loading, independently switchable, on by default; with all switches off it is bit-identical to the corresponding 009).
+**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default); from v8.0.0 it adds a `009` variant (forget-balanced injection, structurally bounded peak gain, on by default); from v8.1.0 it adds a `009elitelinux` variant (Linux single-GPU compile acceleration + multiprocess data loading, independently switchable, on by default; with all switches off it is bit-identical to the corresponding 009); from v9.0.0 it adds a `0010` variant (multi-token prediction, MTP, with shared `output_norm` multi-head supervision, independently switchable, on by default; when off it is bit-identical to the corresponding 009).
 
 ## 📜 Version History
 
@@ -390,7 +411,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **8.1.1** | **2026-10-12** | **009 initialization fix: `delta_scale` −2.5→−1.0, `B_scale` 0.0→1.0, weight_norm gain of `delta_linear`/`B_linear` 0.1→1.0 — fixes "the SSM never activates"** |
+| **9.0.0** | **2026-10-12** | **0010 multi-token prediction (MTP): shared `output_norm` multi-head supervision (main head t+1 / MTP head t+2), multi-timescale targets break the "constant h" dead channel; independently switchable, bit-identical to 009 when `MTP_LOSS_SCALING=0`** |
+| 8.1.1 | 2026-10-12 | 009 initialization fix: `delta_scale` −2.5→−1.0, `B_scale` 0.0→1.0, weight_norm gain of `delta_linear`/`B_linear` 0.1→1.0 — fixes "the SSM never activates" |
 | 8.1.0 | 2026-10-12 | 009elitelinux variant: Linux single-GPU compile acceleration (`torch.compile`/Inductor-Triton) + multiprocess DataLoader, independently switchable, bit-identical when all off |
 | 8.0.0 | 2026-10-11 | 009 variant: forget-balanced injection `B̄ = B̃·(1−|A|)`, peak gain `G_peak ≡ |B̃|` structurally bounded |
 | 7.2.0 | 2026-10-11 | 008 variant: θ structural bound reverted + new δ floor (fixes the forgetless integrator / amp self-excitation) |
@@ -399,6 +421,24 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 9.0.0
+
+> v9.0.0 derives the **0010 variant** from 009 (**including the 8.1.1 initialization fix**) by adding **multi-token prediction (MTP)**: several lightweight heads read the **shared `output_norm`** output and supervise the same hidden state `norm_last` — the main head predicts t+1, the MTP head predicts t+2 — so that **multi-timescale** targets break the "constant h minimizes the loss" dead channel. It only **appends auxiliary supervision**; the main-head architecture and math are untouched (`MTP_LOSS_SCALING=0` or `MTP_NUM_HEADS≤1` ⇒ bit-identical to 009).
+
+- **Motivation**: 8.1.1 lifted the initialization lock, but the shared hidden state can still degenerate to a **near-constant**; if `h` is constant for all t, the main head alone can push the loss to some baseline via the output bias, and the gradient's dependence on `h` tends to zero (dead channel). By predicting **different future steps** (t+1, t+2), MTP forces `h` to encode finer temporal structure, structurally raising the gradient w.r.t. `h`.
+- **Switches / hyperparameters** (defined at the top of the file, independently switchable, on by default):
+  - `MTP_NUM_HEADS` (default `2`): total heads incl. the main head.
+  - `MTP_PREDICT_DISTANCES` (default `[1, 2]`): main head predicts t+1, MTP head predicts t+2; length must equal `MTP_NUM_HEADS`.
+  - `MTP_LOSS_SCALING` (default `0.1`): overall scaling of the MTP auxiliary loss; `0` disables it.
+- **Implementation**: `MTPHead` (`Linear → RMSNorm → Linear`, **starting from the shared `norm_last`, adding no separate main norm**); `_mtp_loss` shifts labels per head by `distance`, masks with `ignore_index=-100`, and averages per-head cross-entropy **normalized by the number of valid tokens**; the training branch appends `loss = loss + MTP_LOSS_SCALING * self._mtp_loss(...)` after the main loss.
+- **CUDA Graph compatibility**: `_mtp_loss` performs **no device→host sync** (no `int()` / `.item()`); `seq_len` is a Python int and only `valid.sum().clamp(min=1)` is used, keeping everything inside the graph ⇒ capturable by the training-step CUDA Graph.
+- **Semantic correction (vs. the original draft)**: since `labels[t] = input_ids[t+1]`, the draft's `labels[:, distance:]` actually predicts t+distance+1 (**off by one**); 0010 uses `shift = distance − 1`, so `distance=2` predicts exactly t+2, matching the intended "distances [1, 2]" design.
+- **0010 variant**: each of the 12 ultra3 009 files (6 elite + 6 elitelinux) derives a 0010; the flagship `0.85B1/312009elitelinux.py` derives `3120010elitelinux.py`; this release ships the main-family `3120010elite.py` and the x25-family `31250010elite.py`, plus their linux counterparts.
+
+### Validation & Boundaries
+- **Off ⇒ equivalent (theoretically derivable)**: with `MTP_LOSS_SCALING=0` (or `MTP_NUM_HEADS≤1`) the MTP heads are not instantiated and the auxiliary term is not added ⇒ the forward pass is bit-identical to 009.
+- ⚠️ **Effect not yet measured**: this release only claims "the MTP structure is wired as designed, switchable, and graph-capturable"; it does **not** claim any improvement in PPL / convergence / dead channel — the actual training benefit **has not been experimentally verified**.
 
 ## 🚀 What's New in 8.1.1
 
@@ -625,5 +665,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 8.1.1
+Version: 9.0.0
 Last Updated: 2026-10-12
