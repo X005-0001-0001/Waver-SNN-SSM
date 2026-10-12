@@ -4,7 +4,7 @@
 所有曲线均由 `对照测试/` 下各 run 的 `training_log.txt` **重新解析生成**（EMA 平滑 + 均匀降采样），不使用任何过时旧图。
 
 - 机器可读结果：[`matrix/matrix.csv`](./matrix/matrix.csv)、[`matrix/summary.json`](./matrix/summary.json)
-- 图集：[`round3/`](./round3/)（15 张分维度图）、[`matrix/`](./matrix/)（3 张总览图）、[`v6/`](./v6/)（低精度与加速）
+- 图集：[`round3/`](./round3/)（15 张分维度图）、[`matrix/`](./matrix/)（3 张总览图）、[`v6/`](./v6/)（低精度与加速）、[`linux/`](./linux/)（单卡 Linux 加速收敛一致性）
 
 > **结论边界声明**：下列结论中，凡标注「实测」者为日志原始数据直接读出；标注「本窗口内」者为该实验窗口（约 8.9 万步 / 10 epoch）内的观察，不外推到更长训练；标注「未验证」者为尚无实验支撑的推断。
 

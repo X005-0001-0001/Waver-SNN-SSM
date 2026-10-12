@@ -6,6 +6,38 @@
 
 ---
 
+## 8.1.0 — 2026-10-12
+
+> 定位：v8 的**Linux 单卡加速变体** —— 在 009 基础上派生 **009elitelinux**：把 Win11 上因 Triton / Inductor 支持受限而无法启用的编译加速（`torch.compile` / Inductor-Triton 融合）与 DataLoader 多进程等**适用于单卡**的优化做成**独立可关**的开关（默认开启）。不改模型结构 / 优化器数学；**全部开关关闭时与对应 009 逐位一致**。
+
+### 新增
+- **6 个 Linux 变体**：`210009elitelinux.py`、`212009elitelinux.py`、`2125009elitelinux.py`、`310009elitelinux.py`、`312009elitelinux.py`、`3125009elitelinux.py`（= 对应 009 + Linux 单卡加速开关区）。
+- **文件头集中开关区**（每个独立可关；全关 ⇒ 与对应 009 **逐位一致**）：
+  - `LINUX_USE_TORCH_COMPILE`（**默认 True**）：用 Inductor + Triton 融合**标准算子** —— `RMSNorm.forward`、FFN / SwiGLU 专家块、LM Head 分块交叉熵。
+  - `LINUX_COMPILE_MODE`（默认 `max-autotune-no-cudagraphs`）：显式不用 Inductor 自身的 cudagraph trees，避免与手写训练步 CUDA Graph 叠加冲突。
+  - `LINUX_COMPILE_DYNAMIC`（默认 `False`）：静态形状（batch=1、T 固定）利于编译。
+  - `LINUX_NUM_WORKERS`（默认 `4`）：DataLoader 多进程 + `persistent_workers`（覆盖文件内 `NUM_WORKERS`）；Windows 曾被迫设 0，Linux 侧稳定。
+  - `LINUX_OPTIMIZER`（默认 `'bnb8bit'`）：`'bnb8bit'`（= 009 原样）\| `'fused_adamw'`（`torch.optim.AdamW(fused=True)`）\| `'torchao8bit'`（可选，会改数值）。
+  - `LINUX_USE_TF32`（默认 `False`）：可选开 `allow_tf32`，会改数值，默认关。
+- **自定义算子隔离**：对 `BlellochScanFn` 扫描核心与矩阵指数闭式实现（x25 族为 `_capturable_expm_skew`，其余为 `_closed_form_expm_2x2` / `_capturable_expm`）加 `torch.compiler.disable`，避免 graph break 破坏其余融合。
+- **失败兜底**：`try/except` 包裹编译，编译不可用 / 失败 ⇒ 自动回退 eager 并写日志（与 8-bit 优化器双重兜底同风格）。
+
+### 验证
+- **数值等价**：固定输入前向，开关全关时 logits 最大绝对误差 **0.0**（逐位一致）；全开（WSL, sm_120）时 logits 最大绝对误差 **9.537e-07 < 1e-6**。
+- **收敛一致性（超小 A/B，同一张 5080）**：Win11 未优化 `312009elite.py` vs WSL 优化 `312009elitelinux.py`（VOCAB≈256 / H=128 / L=2 / T=256，均 534 步）：最终 Loss 1.0182 vs 1.0178、PPL 2.77 vs 2.77，逐步 Loss 曲线走势一致、**无正确性回归**。
+- **证据**：`compare/linux/`（A/B 曲线图 + 数据表）。
+- **环境**：Linux 侧日志确认 `torch.compile` 命中（RMSNorm / LMHead-CE 首次编译成功，无 graph-break 报错）、`num_workers>0` 生效。
+
+### 安全工作边界
+- SSM 核心（自定义 autograd 扫描 + 闭式矩阵指数）被**隔离为 eager**，故编译融合收益只在 norm / FFN / CE 三处标准算子；`torch.compile` 若与手写训练步 CUDA Graph 冲突，默认用 `-no-cudagraphs` 模式并存，仍失败则回退 eager。
+- **超小实验只证明「收敛一致 + 无正确性回归」，不能代表真实规模的吞吐收益**；本版本只声称「Linux 单卡加速路径可用 + 收敛一致性已验」，**不声称**具体加速比。
+- 单卡场景，**不含** NCCL / DDP / FSDP 等多卡项。
+
+### Release 文件
+- `v8/` 新增 `312009elitelinux.py`（主族）与 `3125009elitelinux.py`（x25 族）；其余 4 个 linux 变体仅保留在 ultra3 私有开发目录，不入 release。
+
+---
+
 ## 8.0.0 — 2026-10-11
 
 > 定位：v8 的**动力学稳定性分支（注入端结构性修法）** —— 在 007 基础上派生 **009 变体**：把注入项从 **ZOH 连续积分** 改为 **遗忘平衡注入** `B̄ = B̃·(1−|A|)`，使**峰值增益**在**解耦极限（M=0）下恒等** `G_peak ≡ |B̃|`、在**耦合（M≠0）下保持有界**（实测 ≲3.5×），从结构上消除慢极点（ν→0）的直流增益爆炸。不改动模型结构 / 优化器 / 数值路径（`GAIN_NORM_ENABLED=False` 时与 007 逐位一致）。

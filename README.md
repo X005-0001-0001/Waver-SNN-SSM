@@ -9,7 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`8.0.0`（2026-10-11）** —— 新增 009 变体：注入端**遗忘平衡** `B̄ = B̃·(1−|A|)`，解耦时峰值增益恒等 `G_peak ≡ |B̃|`、耦合时有界（实测 ≲3.5×），消除慢极点（ν→0）直流增益爆炸（承接 7.2.0 的 008 变体）。
+> **当前最新 / Latest：`8.1.0`（2026-10-12）** —— 新增 **009elitelinux** 变体：把 Win11 上无法启用的 **Linux 单卡编译加速**（`torch.compile` / Inductor-Triton 融合标准算子）与 DataLoader 多进程做成**独立可关**开关（默认开启）；**全关时与对应 009 逐位一致**，超小 A/B 验证收敛一致、无正确性回归。
+
+> 上一版 / Previous：`8.0.0`（2026-10-11）—— 009 变体：注入端**遗忘平衡** `B̄ = B̃·(1−|A|)`，解耦时峰值增益恒等 `G_peak ≡ |B̃|`、耦合时有界（实测 ≲3.5×），消除慢极点（ν→0）直流增益爆炸（承接 7.2.0 的 008 变体）。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -59,14 +61,14 @@ Waver-SNN-SSM/
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界 / δ 下限（312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite）
-├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）
+├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）+ Linux 单卡加速（312009elitelinux / 3125009elitelinux）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）；v8.0.0 起增设 `009` 变体（遗忘平衡注入，峰值增益结构性有界，默认开启）。
+**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）；v8.0.0 起增设 `009` 变体（遗忘平衡注入，峰值增益结构性有界，默认开启）；v8.1.0 起增设 `009elitelinux` 变体（Linux 单卡编译加速 + 多进程数据加载，独立可关，默认开启；全关时与对应 009 逐位一致）。
 
 ## 📜 版本历史
 
@@ -82,13 +84,34 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **8.0.0** | **2026-10-11** | **009 变体：遗忘平衡注入 `B̄ = B̃·(1−|A|)`，峰值增益解耦恒等 `G_peak ≡ |B̃|`、耦合有界（≲3.5×）** |
+| **8.1.0** | **2026-10-12** | **009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致** |
+| 8.0.0 | 2026-10-11 | 009 变体：遗忘平衡注入 `B̄ = B̃·(1−|A|)`，峰值增益解耦恒等 `G_peak ≡ |B̃|`、耦合有界（≲3.5×） |
 | 7.2.0 | 2026-10-11 | 008 变体：回退 θ 结构性上界 + 新增 δ 下限（治无遗忘积分器 / amp 自激） |
 | 7.1.0 | 2026-10-11 | 017 变体：相位基频 θ 结构性上界 `θ = π·sigmoid(theta_raw)` |
 | 7.0.3 | 2026-10-11 | 修复 CUDA Graph 解码 × AMP 生成崩溃（autocast 缓存冲突） |
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 8.1.0 核心变更
+
+> 定位：v8 的**Linux 单卡加速变体** —— 在 009 基础上派生 **009elitelinux**：把 Win11 上因 Triton / Inductor 支持受限而无法启用的编译加速（`torch.compile` / Inductor-Triton 融合）与 DataLoader 多进程等**适用于单卡**的优化做成**独立可关**的开关（默认开启）。不改模型结构 / 优化器数学；**全部开关关闭时与对应 009 逐位一致**。
+
+- **文件头集中开关区**（每个独立可关；全关 ⇒ 与对应 009 **逐位一致**）：
+  - `LINUX_USE_TORCH_COMPILE`（**默认 True**）：用 Inductor + Triton 融合**标准算子** —— `RMSNorm.forward`、FFN / SwiGLU 专家块、LM Head 分块交叉熵。
+  - `LINUX_COMPILE_MODE`（默认 `max-autotune-no-cudagraphs`）：显式不用 Inductor 自身的 cudagraph trees，避免与手写训练步 CUDA Graph 叠加冲突。
+  - `LINUX_COMPILE_DYNAMIC`（默认 `False`）：静态形状（batch=1、T 固定）利于编译。
+  - `LINUX_NUM_WORKERS`（默认 `4`）：DataLoader 多进程 + `persistent_workers`（覆盖文件内 `NUM_WORKERS`）；Windows 曾被迫设 0，Linux 侧稳定。
+  - `LINUX_OPTIMIZER`（默认 `'bnb8bit'`）：`'bnb8bit'`（= 009 原样）\| `'fused_adamw'`（`torch.optim.AdamW(fused=True)`）\| `'torchao8bit'`（可选，会改数值）。
+  - `LINUX_USE_TF32`（默认 `False`）：可选开 `allow_tf32`，会改数值，默认关。
+- **自定义算子隔离**：对 `BlellochScanFn` 扫描核心与矩阵指数闭式实现（x25 族为 `_capturable_expm_skew`，其余为 `_closed_form_expm_2x2` / `_capturable_expm`）加 `torch.compiler.disable`，避免 graph break 破坏其余融合。
+- **失败兜底**：`try/except` 包裹编译，编译不可用 / 失败 ⇒ 自动回退 eager 并写日志（与 8-bit 优化器双重兜底同风格）。
+- **009elitelinux 变体**：ultra3 的 6 个 009 文件各派生一个 linux 变体；本次 release 发布主族 `312009elitelinux.py` 与 x25 族 `3125009elitelinux.py`，其余 4 个仅留私有开发目录。
+
+### 验证与边界
+- **数值等价**：固定输入前向，开关全关时 logits 最大绝对误差 **0.0**（逐位一致）；全开（WSL, sm_120）时 logits 最大绝对误差 **9.537e-07 < 1e-6**。
+- **收敛一致性（超小 A/B，同一张 5080）**：Win11 未优化 `312009elite.py` vs WSL 优化 `312009elitelinux.py`（VOCAB≈256 / H=128 / L=2 / T=256，均 534 步）：最终 Loss 1.0182 vs 1.0178、PPL 2.77 vs 2.77，逐步 Loss 曲线走势一致、**无正确性回归**。证据见 [`compare/linux/`](./compare/linux/)。
+- **边界**：SSM 核心（自定义 autograd 扫描 + 闭式矩阵指数）被**隔离为 eager**，编译融合收益只在 norm / FFN / CE 三处标准算子；**超小实验只证明「收敛一致 + 无正确性回归」，不能代表真实规模的吞吐收益** —— 本版本只声称「Linux 单卡加速路径可用 + 收敛一致性已验」，**不声称**具体加速比。单卡场景，**不含** NCCL / DDP / FSDP 等多卡项。
 
 ## 🚀 8.0.0 核心变更
 
@@ -331,14 +354,14 @@ Waver-SNN-SSM/
 ├── v5/          # v5 data-format layer (312005elite / 312505elite)
 ├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
 ├── v7/          # training-step CUDA Graph + 8-bit AdamW + θ structural bound / δ floor (312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite)
-├── v8/          # forget-balanced injection · structurally bounded peak gain (312009elite / 3125009elite)
+├── v8/          # forget-balanced injection · structurally bounded peak gain (312009elite / 3125009elite) + Linux single-GPU accel (312009elitelinux / 3125009elitelinux)
 ├── compare/     # comparison: round3 figure set + v6 report + dashboards
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default); from v8.0.0 it adds a `009` variant (forget-balanced injection, structurally bounded peak gain, on by default).
+**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default); from v8.0.0 it adds a `009` variant (forget-balanced injection, structurally bounded peak gain, on by default); from v8.1.0 it adds a `009elitelinux` variant (Linux single-GPU compile acceleration + multiprocess data loading, independently switchable, on by default; with all switches off it is bit-identical to the corresponding 009).
 
 ## 📜 Version History
 
@@ -354,13 +377,34 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **8.0.0** | **2026-10-11** | **009 variant: forget-balanced injection `B̄ = B̃·(1−|A|)`, peak gain `G_peak ≡ |B̃|` structurally bounded** |
+| **8.1.0** | **2026-10-12** | **009elitelinux variant: Linux single-GPU compile acceleration (`torch.compile`/Inductor-Triton) + multiprocess DataLoader, independently switchable, bit-identical when all off** |
+| 8.0.0 | 2026-10-11 | 009 variant: forget-balanced injection `B̄ = B̃·(1−|A|)`, peak gain `G_peak ≡ |B̃|` structurally bounded |
 | 7.2.0 | 2026-10-11 | 008 variant: θ structural bound reverted + new δ floor (fixes the forgetless integrator / amp self-excitation) |
 | 7.1.0 | 2026-10-11 | 017 variant: structural upper bound on the base phase θ, `θ = π·sigmoid(theta_raw)` |
 | 7.0.3 | 2026-10-11 | Fix CUDA Graph decoding × AMP generation crash (autocast-cache conflict) |
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 8.1.0
+
+> v8.1.0 is the **Linux single-GPU acceleration variant** of v8 — it derives **009elitelinux** from 009: it turns the compile acceleration (`torch.compile` / Inductor-Triton fusion) and multiprocess data loading that were unavailable on Win11 (limited Triton / Inductor support) into **independently switchable** flags for a **single GPU** (on by default). The model architecture and optimizer math are untouched; **with all switches off it is bit-identical to the corresponding 009**.
+
+- **Centralized switch block at the top of the file** (each independently switchable; all off ⇒ **bit-identical** to the corresponding 009):
+  - `LINUX_USE_TORCH_COMPILE` (**on by default**): Inductor + Triton fusion of **standard ops** — `RMSNorm.forward`, the FFN / SwiGLU expert block, and the chunked LM-head cross-entropy.
+  - `LINUX_COMPILE_MODE` (default `max-autotune-no-cudagraphs`): explicitly avoids Inductor's own cudagraph trees so it can coexist with the hand-written training-step CUDA Graph.
+  - `LINUX_COMPILE_DYNAMIC` (default `False`): static shapes (batch=1, fixed T) favor compilation.
+  - `LINUX_NUM_WORKERS` (default `4`): multiprocess DataLoader + `persistent_workers` (overrides the in-file `NUM_WORKERS`); Windows was forced to 0, Linux is stable.
+  - `LINUX_OPTIMIZER` (default `'bnb8bit'`): `'bnb8bit'` (= 009 as-is) \| `'fused_adamw'` (`torch.optim.AdamW(fused=True)`) \| `'torchao8bit'` (optional, changes numerics).
+  - `LINUX_USE_TF32` (default `False`): optionally enables `allow_tf32`; changes numerics, off by default.
+- **Custom-op isolation**: `torch.compiler.disable` on the `BlellochScanFn` scan core and the closed-form matrix-exponential implementations (x25 family: `_capturable_expm_skew`; the rest: `_closed_form_expm_2x2` / `_capturable_expm`) to avoid graph breaks breaking the rest of the fusion.
+- **Failure fallback**: the compile is wrapped in `try/except`; unavailable / failed compilation ⇒ automatically falls back to eager with a log line (same style as the 8-bit optimizer double fallback).
+- **009elitelinux variant**: each of the 6 ultra3 009 files derives a linux variant; this release ships the main family `312009elitelinux.py` and the x25 family `3125009elitelinux.py`, the other 4 stay in the private dev directory only.
+
+### Verification & scope
+- **Numerical equivalence**: on a fixed forward input, with all switches off the logits max absolute error is **0.0** (bit-identical); with all on (WSL, sm_120) it is **9.537e-07 < 1e-6**.
+- **Convergence consistency (tiny A/B, same 5080)**: Win11 unoptimized `312009elite.py` vs. WSL optimized `312009elitelinux.py` (VOCAB≈256 / H=128 / L=2 / T=256, both 534 steps): final Loss 1.0182 vs. 1.0178, PPL 2.77 vs. 2.77, step-wise Loss curves agree, **no correctness regression**. Evidence in [`compare/linux/`](./compare/linux/).
+- **Scope**: the SSM core (custom autograd scan + closed-form matrix exponential) is **isolated as eager**, so the fusion gains live only in norm / FFN / CE; **the tiny experiment only proves "consistent convergence + no correctness regression", not real-scale throughput** — this release only claims "the Linux single-GPU acceleration path works and convergence consistency is verified", and makes **no** claim about a specific speedup. Single-GPU scope, **excluding** NCCL / DDP / FSDP.
 
 ## 🚀 What's New in 8.0.0
 
@@ -557,5 +601,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 8.0.0
-Last Updated: 2026-10-11
+Version: 8.1.0
+Last Updated: 2026-10-12
