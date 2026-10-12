@@ -6,6 +6,28 @@
 
 ---
 
+## 8.1.1 — 2026-10-12
+
+> 定位：009 系列的**初始化修复**（**仅改初始值**，不改数学路径 / 结构 / 优化器）。修复「SSM 从未激活」的初始化死锁：从零训练时 loss 恒等于随机基线、SSM 内部参数无梯度。
+
+### 修复
+- **病征（实测）**：从零训练 `312009elite`，三步 loss ≈ 10.63 恒定（≈ `ln 40000`，即随机权重基线）；`wave_raw_std`≈0.0008–0.0027、`amp_std`≈0.0006–0.0023（输入 `I_std`≈1.0 正常，而经 SSM 后输出近常数）；28 层 `delta_mean` 全为 0.0547–0.0549（= `softplus(0.69)×softplus(−2.5)` 的理论值）；`Bn/Dn/An/Mn` 三步逐位不变 ⇒ 梯度未进入 SSM 内部参数。
+- **病根（理论可推）**：初始化后 `delta = softplus(delta_raw)·softplus(−2.5) ≈ 0.055`、`_g = 1 − e^{−δν} ≈ 0.03`，`B_disc = B_real·_g·softplus(0)` 被压到 `B_real` 的 ~2%，状态注入信号趋零；形成「δ 小 → _g 小 → B_disc 小 → 对 δ/B 的梯度小」的正反馈锁死，靠梯度无法自行逃出。
+- **改法（仅初始化，保留 `GAIN_NORM_ENABLED` 数学不变）**：
+  - `ParallelComplexWaveLayer.__init__`：`self.delta_scale` 初值 `−2.5 → −1.0`（softplus 0.075 → 0.313，×4）；`self.B_scale` 初值 `0.0 → 1.0`（softplus 0.693 → 1.313，×1.9）。
+  - `_init_weights`：`_small` 移除 `delta_linear` / `B_linear`（其 weight_norm 方向初始化 gain 由 0.1 → 1.0），仅保留 `theta_delta_proj`。
+
+### 变更范围
+- ultra3：6 个 009 elite（`210/212/2125/310/312/3125`）+ 6 个 009 elitelinux，共 12 个文件。
+- 旗舰版：`0.85B1/312009elitelinux.py`。
+- release 仓：`v8/` 的 4 个文件（`312009elite.py`、`3125009elite.py`、`312009elitelinux.py`、`3125009elitelinux.py`）。
+
+### 边界与注意
+- ⚠️ **只对「从零初始化」生效**：加载 checkpoint（`brain.pt`）会覆盖新初始值 ⇒ 需从零训练或移走 `brain.pt`，否则修复不生效。
+- **对训练收敛的影响尚未实测（未验证）**：本版只声称「修正了初始化量级、解除了 δ/B 的正反馈锁死条件」，**不声称**已修复 PPL 收敛 / 训练效果。
+
+---
+
 ## 8.1.0 — 2026-10-12
 
 > 定位：v8 的**Linux 单卡加速变体** —— 在 009 基础上派生 **009elitelinux**：把 Win11 上因 Triton / Inductor 支持受限而无法启用的编译加速（`torch.compile` / Inductor-Triton 融合）与 DataLoader 多进程等**适用于单卡**的优化做成**独立可关**的开关（默认开启）。不改模型结构 / 优化器数学；**全部开关关闭时与对应 009 逐位一致**。

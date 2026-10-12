@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`8.1.0`（2026-10-12）** —— 新增 **009elitelinux** 变体：把 Win11 上无法启用的 **Linux 单卡编译加速**（`torch.compile` / Inductor-Triton 融合标准算子）与 DataLoader 多进程做成**独立可关**开关（默认开启）；**全关时与对应 009 逐位一致**，超小 A/B 验证收敛一致、无正确性回归。
+> **当前最新 / Latest：`8.1.1`（2026-10-12）** —— **009 系列初始化修复**：修正并行复波层 `delta_scale`（−2.5→−1.0）/ `B_scale`（0.0→1.0）初值与 `delta_linear` / `B_linear` 的 weight_norm 初始化增益（0.1→1.0），解除「δ 小 → 注入小 → 梯度小」的初始化锁死。**仅改初始值，数学路径不变。**
 
-> 上一版 / Previous：`8.0.0`（2026-10-11）—— 009 变体：注入端**遗忘平衡** `B̄ = B̃·(1−|A|)`，解耦时峰值增益恒等 `G_peak ≡ |B̃|`、耦合时有界（实测 ≲3.5×），消除慢极点（ν→0）直流增益爆炸（承接 7.2.0 的 008 变体）。
+> 上一版 / Previous：`8.1.0`（2026-10-12）—— 009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -61,7 +61,7 @@ Waver-SNN-SSM/
 ├── v5/          # v5 数据格式层（312005elite / 312505elite）
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界 / δ 下限（312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite）
-├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）+ Linux 单卡加速（312009elitelinux / 3125009elitelinux）
+├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）+ Linux 单卡加速（312009elitelinux / 3125009elitelinux）+ 初始化修复（8.1.1）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
@@ -84,7 +84,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **8.1.0** | **2026-10-12** | **009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致** |
+| **8.1.1** | **2026-10-12** | **009 初始化修复：`delta_scale` −2.5→−1.0、`B_scale` 0.0→1.0、`delta_linear`/`B_linear` 的 weight_norm gain 0.1→1.0，修复「SSM 从未激活」** |
+| 8.1.0 | 2026-10-12 | 009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致 |
 | 8.0.0 | 2026-10-11 | 009 变体：遗忘平衡注入 `B̄ = B̃·(1−|A|)`，峰值增益解耦恒等 `G_peak ≡ |B̃|`、耦合有界（≲3.5×） |
 | 7.2.0 | 2026-10-11 | 008 变体：回退 θ 结构性上界 + 新增 δ 下限（治无遗忘积分器 / amp 自激） |
 | 7.1.0 | 2026-10-11 | 017 变体：相位基频 θ 结构性上界 `θ = π·sigmoid(theta_raw)` |
@@ -92,6 +93,18 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 8.1.1 核心变更
+
+> 定位：009 系列的**初始化修复**（**仅改初始值**，不改数学路径 / 结构 / 优化器）。修复「SSM 从未激活」的初始化死锁：从零训练时 loss 恒等于随机基线、SSM 内部参数无梯度。
+
+- **病征（实测）**：从零训练 `312009elite`，三步 loss ≈ 10.63 恒定（≈ `ln 40000`，即随机权重基线）；`wave_raw_std`≈0.0008–0.0027、`amp_std`≈0.0006–0.0023（输入 `I_std`≈1.0 正常，而经 SSM 后输出近常数）；28 层 `delta_mean` 全为 0.0547–0.0549（= `softplus(0.69)×softplus(−2.5)` 的理论值）；`Bn/Dn/An/Mn` 三步逐位不变 ⇒ 梯度未进入 SSM 内部参数。
+- **病根（理论可推）**：初始化后 `delta = softplus(delta_raw)·softplus(−2.5) ≈ 0.055`、`_g = 1 − e^{−δν} ≈ 0.03`，`B_disc = B_real·_g·softplus(0)` 被压到 `B_real` 的 ~2%，状态注入信号趋零；形成「δ 小 → _g 小 → B_disc 小 → 对 δ/B 的梯度小」的正反馈锁死，靠梯度无法自行逃出。
+- **改法（仅初始化，保留 `GAIN_NORM_ENABLED` 数学不变）**：
+  - `ParallelComplexWaveLayer.__init__`：`self.delta_scale` 初值 `−2.5 → −1.0`（softplus 0.075 → 0.313，×4）；`self.B_scale` 初值 `0.0 → 1.0`（softplus 0.693 → 1.313，×1.9）。
+  - `_init_weights`：`_small` 移除 `delta_linear` / `B_linear`（其 weight_norm 方向初始化 gain 由 0.1 → 1.0），仅保留 `theta_delta_proj`。
+- **变更范围**：ultra3 的 6 个 009 elite（`210/212/2125/310/312/3125`）+ 6 个 009 elitelinux（12 个文件）；旗舰版 `0.85B1/312009elitelinux.py`；release 仓 `v8/` 的 4 个文件。
+- ⚠️ **只对「从零初始化」生效**：加载 checkpoint（`brain.pt`）会覆盖新初始值 ⇒ 需从零训练或移走 `brain.pt`，否则修复不生效。**对训练收敛的影响尚未实测（未验证）** —— 本版只声称「修正了初始化量级、解除 δ/B 正反馈锁死条件」，**不声称**已修复 PPL 收敛 / 训练效果。
 
 ## 🚀 8.1.0 核心变更
 
@@ -377,7 +390,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **8.1.0** | **2026-10-12** | **009elitelinux variant: Linux single-GPU compile acceleration (`torch.compile`/Inductor-Triton) + multiprocess DataLoader, independently switchable, bit-identical when all off** |
+| **8.1.1** | **2026-10-12** | **009 initialization fix: `delta_scale` −2.5→−1.0, `B_scale` 0.0→1.0, weight_norm gain of `delta_linear`/`B_linear` 0.1→1.0 — fixes "the SSM never activates"** |
+| 8.1.0 | 2026-10-12 | 009elitelinux variant: Linux single-GPU compile acceleration (`torch.compile`/Inductor-Triton) + multiprocess DataLoader, independently switchable, bit-identical when all off |
 | 8.0.0 | 2026-10-11 | 009 variant: forget-balanced injection `B̄ = B̃·(1−|A|)`, peak gain `G_peak ≡ |B̃|` structurally bounded |
 | 7.2.0 | 2026-10-11 | 008 variant: θ structural bound reverted + new δ floor (fixes the forgetless integrator / amp self-excitation) |
 | 7.1.0 | 2026-10-11 | 017 variant: structural upper bound on the base phase θ, `θ = π·sigmoid(theta_raw)` |
@@ -385,6 +399,16 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 8.1.1
+
+> v8.1.1 is an **initialization fix** for the 009 family (**initial values only** — math path / architecture / optimizer untouched). It fixes an initialization deadlock in which the **SSM never activates**: from-scratch training stalls at the random-weight baseline loss and the SSM's internal parameters receive no gradient.
+
+- **Symptom (measured)**: from-scratch `312009elite` keeps loss ≈ 10.63 for three steps (≈ `ln 40000`, the random-weight baseline); `wave_raw_std` ≈ 0.0008–0.0027 and `amp_std` ≈ 0.0006–0.0023 (input `I_std` ≈ 1.0 is normal, yet the SSM output is nearly constant); the 28-layer `delta_mean` is 0.0547–0.0549 for all layers (= the theoretical `softplus(0.69)×softplus(−2.5)`); `Bn/Dn/An/Mn` are bit-identical across the three steps ⇒ no gradient reaches the SSM's internal parameters.
+- **Root cause (theoretically derivable)**: after init `delta = softplus(delta_raw)·softplus(−2.5) ≈ 0.055`, `_g = 1 − e^{−δν} ≈ 0.03`, and `B_disc = B_real·_g·softplus(0)` is squeezed to ~2% of `B_real`, so the state-injection signal approaches zero; this forms a positive-feedback lock ("small δ → small _g → small B_disc → small gradient on δ/B") that gradient descent cannot escape on its own.
+- **Fix (init only; `GAIN_NORM_ENABLED` math unchanged)**: in `ParallelComplexWaveLayer.__init__`, `delta_scale` init `−2.5 → −1.0` (softplus 0.075 → 0.313, ×4) and `B_scale` init `0.0 → 1.0` (softplus 0.693 → 1.313, ×1.9); in `_init_weights`, `_small` drops `delta_linear` / `B_linear` (their weight_norm direction gain goes 0.1 → 1.0), keeping only `theta_delta_proj`.
+- **Scope**: 6 ultra3 009 elite (`210/212/2125/310/312/3125`) + 6 ultra3 009 elitelinux (12 files), plus the flagship `0.85B1/312009elitelinux.py`; the release repo `v8/` syncs its 4 files.
+- ⚠️ **Only affects from-scratch initialization**: loading a checkpoint (`brain.pt`) overwrites the new initial values ⇒ train from scratch or move `brain.pt` away. **The effect on convergence is not yet measured (unverified)** — this release only claims the initialization magnitudes were corrected and the δ/B feedback lock removed; it does **not** claim PPL/convergence is fixed.
 
 ## 🚀 What's New in 8.1.0
 
@@ -601,5 +625,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 8.1.0
+Version: 8.1.1
 Last Updated: 2026-10-12

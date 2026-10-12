@@ -1136,8 +1136,8 @@ class ParallelComplexWaveLayer(nn.Module):
 
         # 幅度调制参数（仅用于输出门控，与读取端无关）
         self.max_freq = COMPLEX_MAX_FREQ
-        self.delta_scale = nn.Parameter(torch.tensor(-2.5))   # softplus(-2.5)≈0.075，delta 初始∈[0.001,0.1]
-        self.B_scale = nn.Parameter(torch.tensor(0.0))       # softplus(0)≈0.693
+        self.delta_scale = nn.Parameter(torch.tensor(-1.0))   # softplus(-1.0)=0.313 vs 0.076，×4
+        self.B_scale = nn.Parameter(torch.tensor(1.0))        # softplus(1.0)=1.313 vs 0.693，×1.9
 
         self.output_proj = nn.Linear(3 * K * output_dim, output_dim)
         self.output_norm = RMSNorm(output_dim)
@@ -1158,7 +1158,7 @@ class ParallelComplexWaveLayer(nn.Module):
             wn_layers.append(self.summary_linear)
         if hasattr(self, 'global_mod_linear'):
             wn_layers.append(self.global_mod_linear)
-        _small = [self.delta_linear, self.B_linear] + ([self.theta_delta_proj] if THETA_DELTA_ENABLED else [])
+        _small = [self.theta_delta_proj] if THETA_DELTA_ENABLED else []
         for lin in wn_layers:
             gain = 0.1 if any(lin is s for s in _small) else 1.0
             v = lin.parametrizations.weight.original1
