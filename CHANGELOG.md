@@ -6,6 +6,31 @@
 
 ---
 
+## 9.0.2 — 2026-10-13
+
+> 定位：**0010 训练可观测性与工程修复**（**加监控、修 bug、省显存；不改 9.0.1 已定的 LR / beta2 / clip 数值**）。9.0.1 修正了学习率与二阶矩，但日志里**没有梯度范数**，无法判断 `GRAD_CLIP_NORM=1.0` 是松是紧；本版补上 `grad_norm` 监控，并顺手修掉三个工程问题。
+
+### 新增
+- **`grad_norm` 监控**：训练循环内接住 `clip_grad_()` 的返回值（**裁剪前**总梯度范数），初始化 `last_grad_norm = 0.0`，并在步日志中新增 `GN: {last_grad_norm:.3f}` 字段（与 `LR` 同点打印）。判读基线：长期 <0.5 → 裁剪未生效；长期贴 1.0 → LR 偏高 / 裁剪过紧；偶发 >5.0 → 多为脏 batch spike。
+
+### 修复
+- **`fallback_factory` 参数名 bug（潜伏）**：`build_optimizer` 末尾原以关键字 `lr=`/`weight_decay=` 调用回退工厂，而 `train_from_scratch` 传入的 lambda 形参名为 `_lr`/`_wd` ⇒ 回退分支一旦触发（BNB 不可用 / 非 CUDA）会直接 `TypeError`。改用位置参数 `fallback_factory(param_groups, lr, weight_decay)` 消除该隐患。
+- **MTP 头 CE 分块（显存）**：`_mtp_loss` 原先对 `(B, T, V)` 一次性物化 fp32 logits 再整体求 CE；现与主头同构，按 `LOSS_CHUNK_SIZE` 沿序列分块累加（`reduction="sum"` 可加 ⇒ 与整体求解**数值等价**），削掉 MTP 头的显存尖峰。
+- **RMSNorm `weight` 移出 weight-decay 组**：`no_decay` 原按参数名判定，漏掉了 `layer_norms` / `output_norm` / `mtp_heads.*.norm` 等的 `weight`（`name.split('.')[-1] == 'weight'`），导致 RMSNorm 的尺度被 `weight_decay=0.01` 衰减。改按**模块类型**识别（`isinstance(m, RMSNorm)` 收集 `id(m.weight)` 并排除），不动其它既有 no_decay 成员（`original0` 等仍按名保留；`original0` 实为 2 维 `(out,1)`，**不能**用「按维度分类」判据）。
+
+### 变更范围
+- ultra3：12 个 0010 文件（`210/212/2125/310/312/3125` 的 elite 与 elitelinux）。
+- 旗舰版：`0.85B1/3120010elitelinux.py`。
+- release 仓：`v9/` 的 4 个文件（`3120010elite.py`、`31250010elite.py`、`3120010elitelinux.py`、`31250010elitelinux.py`）。
+
+### 边界与注意
+- ✅ **语法与配置已校验（实测）**：13 个文件通过 AST 解析；逐项断点核对（`last_grad_norm` 捕获 / `GN:` 日志字段 / `fallback_factory` 位置参数 / MTP 分块 / `_rms_norm_weight_ids`）全部符合预期；BOM 与换行保持不变。
+- ✅ **9.0.1 的 commit 与 tag 已推送（实测）**：`refs/heads/main` 与 `refs/tags/9.0.1` 均指向 `e9bc3dd`；本版补齐 **GitHub Release 页面对象**（9.0.1 与 9.0.2）。
+- ⚠️ **收敛效果未实测（未验证）**：`grad_norm` 为新增观测量；MTP 分块与整体求解**理论等价**、RMSNorm 修复**不改前向数值路径**，但均**未做端到端对照实验**。本版**不声称**已打破 8.47 平台 / 改善 PPL。
+- ℹ️ **`GRAD_CLIP_NORM` 保持 `1.0`（未动）**：放松 clip（如 3.0）会放大异常 batch 对二阶矩 `v` 的污染，与 9.0.1 的更高 LR + 更低 `beta2` 叠加将过度放大有效步长；预训练场景维持 1.0。
+
+---
+
 ## 9.0.1 — 2026-10-13
 
 > 定位：**0010 系列的训练超参数修正**（**仅改优化器配置，不改模型结构 / 数学路径 / 初始化**）。针对 0.85B 旗舰模型在 ~14M token 训练下 loss 长期平台化（step≈3000 起稳定在 8.47，随机基线 `ln(40000)≈10.60`）的现象，把学习率提到**预训练量级**并同步下调 AdamW 二阶矩衰减。

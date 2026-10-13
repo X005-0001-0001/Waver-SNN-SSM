@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.0.1`（2026-10-13）** —— **0010 训练配置修正（预训练级学习率）**：把 0010 全族的峰值学习率提到**预训练量级**、按 token 半衰期下调 AdamW `beta2`、每段从 `eta_min` **平滑重启 warmup（不归零）**，用于纠正 0.85B 在 ~14M token 下 loss 长期平台化（8.47）的欠学习配置。**仅改优化器超参数，不改任何模型结构 / 数学路径 / 初始化。**
+> **当前最新 / Latest：`9.0.2`（2026-10-13）** —— **0010 训练可观测性与工程修复**：补上 `grad_norm` 监控（新日志字段 `GN:`），并修复 `fallback_factory` 参数名 bug、把 MTP 头 CE 按 `LOSS_CHUNK_SIZE` 分块、把 RMSNorm `weight` 移出 weight-decay 组。**不改 9.0.1 已定的 LR / beta2 / clip 数值。**
 
-> 上一版 / Previous：`9.0.0`（2026-10-12）—— **0010 多 token 预测（MTP）**：在 009（含 8.1.1 初始化修复）基础上派生 **0010 变体**，用**共享 `output_norm`** 的多头监督（主头预测 t+1、MTP 头预测 t+2）给共享隐状态 `norm_last` 施加多时间尺度目标，从结构上打破「h 恒定即可最小化 loss」的死通道。`MTP_LOSS_SCALING=0` 时与 009 逐位一致。
+> 上一版 / Previous：`9.0.1`（2026-10-13）—— **0010 训练配置修正（预训练级学习率）**：把 0010 全族的峰值学习率提到**预训练量级**、按 token 半衰期下调 AdamW `beta2`、每段从 `eta_min` **平滑重启 warmup（不归零）**，用于纠正 0.85B 在 ~14M token 下 loss 长期平台化（8.47）的欠学习配置。**仅改优化器超参数，不改任何模型结构 / 数学路径 / 初始化。**
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -85,7 +85,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **9.0.1** | **2026-10-13** | **0010 训练配置修正：峰值 LR 提至预训练量级（1e-4）+ AdamW `beta2` 0.999→0.95（按 token 半衰期）+ 每段 warmup 50 步从 `eta_min` 平滑重启 + 梯度裁剪 5.0→1.0；仅改优化器超参，结构/数学/初始化不变** |
+| **9.0.2** | **2026-10-13** | **0010 训练可观测性与工程修复：新增 `grad_norm` 监控（日志字段 `GN:`）+ 修复 `fallback_factory` 参数名 bug + MTP 头 CE 按 `LOSS_CHUNK_SIZE` 分块 + RMSNorm `weight` 移出 weight-decay 组；不改 9.0.1 的 LR/beta2/clip 数值** |
+| 9.0.1 | 2026-10-13 | 0010 训练配置修正：峰值 LR 提至预训练量级（1e-4）+ AdamW `beta2` 0.999→0.95（按 token 半衰期）+ 每段 warmup 50 步从 `eta_min` 平滑重启 + 梯度裁剪 5.0→1.0；仅改优化器超参，结构/数学/初始化不变 |
 | 9.0.0 | 2026-10-12 | 0010 多 token 预测（MTP）：共享 `output_norm` 多头监督（主头 t+1 / MTP 头 t+2），多时间尺度目标打破「h 恒定」死通道；独立可关，`MTP_LOSS_SCALING=0` 时与 009 逐位一致 |
 | 8.1.1 | 2026-10-12 | 009 初始化修复：`delta_scale` −2.5→−1.0、`B_scale` 0.0→1.0、`delta_linear`/`B_linear` 的 weight_norm gain 0.1→1.0，修复「SSM 从未激活」 |
 | 8.1.0 | 2026-10-12 | 009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致 |
@@ -96,6 +97,21 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 9.0.2 核心变更
+
+> 定位：**0010 训练可观测性与工程修复**（**加监控、修 bug、省显存；不改 9.0.1 已定的 LR / beta2 / clip 数值**）。9.0.1 修正了学习率与二阶矩，但日志里**没有梯度范数**，无法判断 `GRAD_CLIP_NORM=1.0` 是松是紧；本版补上 `grad_norm` 监控，并顺手修掉三个工程问题。
+
+- **新增 `grad_norm` 监控**：训练循环内接住 `clip_grad_()` 的返回值（裁剪前总梯度范数），在步日志新增 `GN: {last_grad_norm:.3f}` 字段（与 `LR` 同点）。判读基线：长期 <0.5 → 裁剪未生效；长期贴 1.0 → LR 偏高 / 裁剪过紧；偶发 >5.0 → 多为脏 batch spike。
+- **修复 `fallback_factory` 参数名 bug（潜伏）**：`build_optimizer` 原以关键字 `lr=`/`weight_decay=` 调用回退工厂，而 lambda 形参名为 `_lr`/`_wd` ⇒ 回退分支一旦触发会 `TypeError`；改用位置参数解除。
+- **MTP 头 CE 分块（显存）**：`_mtp_loss` 改为与主头同构、按 `LOSS_CHUNK_SIZE` 沿序列分块累加（`reduction="sum"` 可加 ⇒ 数值等价），削掉 `(B, T, V)` fp32 logits 的显存尖峰。
+- **RMSNorm `weight` 移出 weight-decay 组**：`no_decay` 原按参数名判定，漏掉 `layer_norms` / `output_norm` / `mtp_heads.*.norm` 的 `weight`；改按**模块类型**（`isinstance(m, RMSNorm)`）识别并排除，不动其它既有成员。
+- **`GRAD_CLIP_NORM` 保持 `1.0`（未动）**：放松 clip 会放大异常 batch 对二阶矩 `v` 的污染，与 9.0.1 的更高 LR + 更低 `beta2` 叠加会过度放大有效步长；预训练维持 1.0。
+- **变更范围**：ultra3 的 12 个 0010 文件；旗舰版 `0.85B1/3120010elitelinux.py`；release 仓 `v9/` 的 4 个文件。
+
+### 验证与边界
+- ✅ **语法与配置已校验（实测）**：13 个文件通过 AST 解析，逐项断点核对（`last_grad_norm` / `GN:` / `fallback_factory` 位置参数 / MTP 分块 / `_rms_norm_weight_ids`）全部符合预期，BOM 与换行保持不变。9.0.1 的 commit 与 tag 均已推送（`refs/heads/main`、`refs/tags/9.0.1` → `e9bc3dd`），本版补齐 GitHub Release 页面对象。
+- ⚠️ **收敛效果未实测（未验证）**：`grad_norm` 为新增观测量；MTP 分块与整体求解**理论等价**、RMSNorm 修复**不改前向数值路径**，但均**未做端到端对照实验**。本版**不声称**已打破 8.47 平台 / 改善 PPL。
 
 ## 🚀 9.0.1 核心变更
 
@@ -429,7 +445,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **9.0.1** | **2026-10-13** | **0010 training-config fix: peak LR raised to pretraining scale (1e-4) + AdamW `beta2` 0.999→0.95 (per-token half-life) + 50-step warmup restarting smoothly from `eta_min` + grad clip 5.0→1.0; optimizer hyperparameters only — architecture / math / init unchanged** |
+| **9.0.2** | **2026-10-13** | **0010 training-observability and engineering fix: new `grad_norm` monitoring (log field `GN:`) + fixed the latent `fallback_factory` arg-name bug + chunked CE for MTP heads (`LOSS_CHUNK_SIZE`) + RMSNorm `weight` moved out of the weight-decay group; no change to the 9.0.1 LR/beta2/clip values** |
+| 9.0.1 | 2026-10-13 | 0010 training-config fix: peak LR raised to pretraining scale (1e-4) + AdamW `beta2` 0.999→0.95 (per-token half-life) + 50-step warmup restarting smoothly from `eta_min` + grad clip 5.0→1.0; optimizer hyperparameters only — architecture / math / init unchanged |
 | 9.0.0 | 2026-10-12 | 0010 multi-token prediction (MTP): shared `output_norm` multi-head supervision (main head t+1 / MTP head t+2), multi-timescale targets break the "constant h" dead channel; independently switchable, bit-identical to 009 when `MTP_LOSS_SCALING=0` |
 | 8.1.1 | 2026-10-12 | 009 initialization fix: `delta_scale` −2.5→−1.0, `B_scale` 0.0→1.0, weight_norm gain of `delta_linear`/`B_linear` 0.1→1.0 — fixes "the SSM never activates" |
 | 8.1.0 | 2026-10-12 | 009elitelinux variant: Linux single-GPU compile acceleration (`torch.compile`/Inductor-Triton) + multiprocess DataLoader, independently switchable, bit-identical when all off |
@@ -440,6 +457,21 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 9.0.2
+
+> Positioning: a **training-observability and engineering fix for the 0010 family** (**add monitoring, fix bugs, save VRAM; no change to the LR / beta2 / clip values set in 9.0.1**). 9.0.1 corrected the LR and second moment, but the logs had **no gradient norm**, so there was no way to tell whether `GRAD_CLIP_NORM=1.0` was loose or tight; this release adds `grad_norm` monitoring and fixes three engineering issues.
+
+- **New `grad_norm` monitoring**: the training loop now captures the return value of `clip_grad_()` (the total grad norm before clipping) and adds a `GN: {last_grad_norm:.3f}` field to the step log (alongside `LR`). Reading guide: long-term <0.5 → clipping is inactive; long-term hugging 1.0 → LR too high / clip too tight; occasional >5.0 → usually a dirty-batch spike.
+- **Fixed the latent `fallback_factory` argument-name bug**: `build_optimizer` called the fallback factory with keywords `lr=`/`weight_decay=`, but the lambda's parameters are named `_lr`/`_wd` ⇒ the fallback branch would raise `TypeError`; switched to positional arguments.
+- **Chunked CE for MTP heads (VRAM)**: `_mtp_loss` now mirrors the main head and accumulates CE in `LOSS_CHUNK_SIZE` chunks along the sequence (`reduction="sum"` is additive ⇒ numerically equivalent), removing the `(B, T, V)` fp32-logits spike.
+- **RMSNorm `weight` moved out of the weight-decay group**: `no_decay` used to be name-based and missed the `weight` of `layer_norms` / `output_norm` / `mtp_heads.*.norm`; it now identifies them by **module type** (`isinstance(m, RMSNorm)`) and excludes them, leaving other members untouched.
+- **`GRAD_CLIP_NORM` kept at `1.0` (unchanged)**: relaxing the clip would amplify how anomalous batches pollute the second moment `v`, which — combined with 9.0.1's higher LR and lower `beta2` — would over-amplify the effective step; pretraining keeps 1.0.
+- **Scope**: the 12 ultra3 0010 files; the flagship `0.85B1/3120010elitelinux.py`; the 4 files in the release repo `v9/`.
+
+### Validation & Boundaries
+- ✅ **Syntax and config verified (measured)**: all 13 files parse under AST, and every checkpoint was checked item by item (`last_grad_norm` / `GN:` / `fallback_factory` positional args / MTP chunking / `_rms_norm_weight_ids`); BOM and line endings preserved. 9.0.1's commit and tag are both pushed (`refs/heads/main`, `refs/tags/9.0.1` → `e9bc3dd`); this release adds the GitHub Release objects.
+- ⚠️ **Convergence effect not yet measured (unverified)**: `grad_norm` is a new observable; the MTP chunking is **theoretically equivalent** to the monolithic computation and the RMSNorm fix **does not change the forward numerical path**, but neither has an end-to-end controlled experiment. This release does **not** claim the 8.47 plateau is broken or that PPL improved.
 
 ## 🚀 What's New in 9.0.1
 
@@ -701,5 +733,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.0.1
+Version: 9.0.2
 Last Updated: 2026-10-13

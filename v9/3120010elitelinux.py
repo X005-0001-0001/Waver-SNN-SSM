@@ -2916,6 +2916,7 @@ class WaveSNN(nn.Module):
         """
         total = torch.zeros((), dtype=norm_last.dtype, device=norm_last.device)
         n_heads = 0
+        chunk_size = int(LOSS_CHUNK_SIZE) if LOSS_CHUNK_SIZE else 0
         for head in self.mtp_heads:
             shift = head.distance - 1
             if seq_len <= shift:
@@ -2923,11 +2924,25 @@ class WaveSNN(nn.Module):
             tgt = torch.full_like(labels, -100)
             tgt[:, :seq_len - shift] = labels[:, shift:]
             valid = (tgt != -100)
-            tgt_clamped = torch.where(valid, torch.clamp(tgt, 0, self.vocab_size - 1), tgt)
-            logits = head(norm_last)
-            ce = F.cross_entropy(logits.view(-1, self.vocab_size), tgt_clamped.view(-1),
-                                 ignore_index=-100, reduction="sum")
-            total = total + ce / valid.sum().clamp(min=1)
+            if chunk_size > 0 and seq_len > chunk_size:
+                # 沿序列分块算 CE：与主头同构，避免一次性物化 (B, T, V) 的 fp32 logits 显存尖峰。
+                ce_sum = torch.zeros((), dtype=norm_last.dtype, device=norm_last.device)
+                valid_sum = torch.zeros((), dtype=torch.long, device=norm_last.device)
+                for start in range(0, seq_len, chunk_size):
+                    end = min(start + chunk_size, seq_len)
+                    _valid = valid[:, start:end]
+                    _tgt = torch.where(_valid, torch.clamp(tgt[:, start:end], 0, self.vocab_size - 1), tgt[:, start:end])
+                    _logits = head(norm_last[:, start:end, :])
+                    ce_sum = ce_sum + F.cross_entropy(_logits.view(-1, self.vocab_size), _tgt.view(-1),
+                                                      ignore_index=-100, reduction="sum")
+                    valid_sum = valid_sum + _valid.sum()
+                total = total + ce_sum / valid_sum.clamp(min=1)
+            else:
+                tgt_clamped = torch.where(valid, torch.clamp(tgt, 0, self.vocab_size - 1), tgt)
+                logits = head(norm_last)
+                ce = F.cross_entropy(logits.view(-1, self.vocab_size), tgt_clamped.view(-1),
+                                     ignore_index=-100, reduction="sum")
+                total = total + ce / valid.sum().clamp(min=1)
             n_heads += 1
         if n_heads == 0:
             return total
@@ -3339,7 +3354,7 @@ def build_optimizer(param_groups, lr, weight_decay, fallback_factory):
             return opt
         except Exception as _e:
             log_and_print(f"AdamW8bit 初始化失败（{type(_e).__name__}: {_e}），回退原生优化器。")
-    return fallback_factory(param_groups, lr=lr, weight_decay=weight_decay)
+    return fallback_factory(param_groups, lr, weight_decay)
 
 
 class TrainStepGraphRunner:
@@ -3512,10 +3527,13 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
     no_decay = {'bias', 'logit_scale', 'input_scale', 'input_gain', 'h_ema_beta', 'delta_scale', 'B_scale', 'original0',
             'w_gate_scale', 'w_up_scale', 'w_down_scale', 'theta_raw',
             'nu_log', 'coupling_log'}
+    # RMSNorm 的 weight 是「尺度」而非「权重」，不应被 weight decay 衰减（按参数名判定会漏掉它）。
+    _rms_norm_weight_ids = {id(m.weight) for m in model.modules()
+                            if isinstance(m, RMSNorm) and getattr(m, 'weight', None) is not None}
     param_groups = [
-        {'params': [p for n, p in model.named_parameters() if n.split('.')[-1] not in no_decay and p.requires_grad and p.numel() > 0],
+        {'params': [p for n, p in model.named_parameters() if n.split('.')[-1] not in no_decay and id(p) not in _rms_norm_weight_ids and p.requires_grad and p.numel() > 0],
          'weight_decay': weight_decay, 'lr': lr},
-        {'params': [p for n, p in model.named_parameters() if n.split('.')[-1] in no_decay and p.requires_grad and p.numel() > 0],
+        {'params': [p for n, p in model.named_parameters() if (n.split('.')[-1] in no_decay or id(p) in _rms_norm_weight_ids) and p.requires_grad and p.numel() > 0],
          'weight_decay': 0.0, 'lr': lr},
     ]
     optimizer = build_optimizer(param_groups, lr, weight_decay,
@@ -3525,8 +3543,9 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
     total_updates = total_updates_per_epoch * epochs
     warmup_steps = min(WARMUP_STEPS_PER_SEGMENT, max(1, total_updates))
     decay_steps = max(1, total_updates - warmup_steps) if total_updates > 0 else None
-    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=warmup_steps, decay_steps=decay_steps, eta_min=0.1)
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=warmup_steps, decay_steps=decay_steps, eta_min=COSINE_ETA_MIN / LEARNING_RATE)
     log_and_print(f"训练总参数更新次数 = {total_updates}, 预热步数 = {warmup_steps}, 初始学习率 = {lr}")
+    last_grad_norm = 0.0
 
     best_val_ppl = float('inf')
     patience_counter = 0
@@ -3581,7 +3600,7 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                 total_activity += activity
 
                 if gradients_counter % accumulation_steps == 0:
-                    clip_grad_(model.parameters(), grad_clip)
+                    last_grad_norm = clip_grad_(model.parameters(), grad_clip)
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad(set_to_none=False)
@@ -3613,7 +3632,7 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                     if total_samples > 0:
                         pct_str = f" ({consumed_samples * 100 / total_samples:.1f}%)"
                     log_and_print(f"Epoch {epoch+1}/{epochs} Step {step+1} Loss: {avg_loss:.4f} PPL: {avg_ppl:.2f} "
-                                  f"Activity: {avg_act:.4f} LR: {current_lr:.6f} "
+                                  f"Activity: {avg_act:.4f} LR: {current_lr:.6f} GN: {last_grad_norm:.3f} "
                                   f"Samples: {consumed_samples}{pct_str}{mem_str}")
                     # --- layer 状态监控（与 MON 同点打印，避免 forward 内 .item() 同步打断 GPU）---
                     for li, layer in enumerate(model.layers):
