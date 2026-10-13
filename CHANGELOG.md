@@ -6,6 +6,30 @@
 
 ---
 
+## 9.0.1 — 2026-10-13
+
+> 定位：**0010 系列的训练超参数修正**（**仅改优化器配置，不改模型结构 / 数学路径 / 初始化**）。针对 0.85B 旗舰模型在 ~14M token 训练下 loss 长期平台化（step≈3000 起稳定在 8.47，随机基线 `ln(40000)≈10.60`）的现象，把学习率提到**预训练量级**并同步下调 AdamW 二阶矩衰减。
+
+### 变更
+- **`LEARNING_RATE`**：`1e-3`（ultra3）/ `3e-5`（旗舰版）→ **`1.0e-4`**（预训练量级；0.85B 建议区间 1e-4 ~ 3e-4）。
+- **`ADAM_BETA2`（新增常量）**：`0.999` → **`0.95`**，经 `betas=(0.9, ADAM_BETA2)` 接入 bnb8bit / fused AdamW / torchao8bit / 回退 AdamW **全部优化器分支**。
+- **`WARMUP_STEPS_PER_SEGMENT`（新增常量）**：**`50`**；替换原 `warmup_steps = min(2000, int(total_updates * 0.02))`。
+- **`COSINE_ETA_MIN`**：`1e-6` → **`1e-5`**（文档值）；实际段末 LR = `eta_min(0.1) × LEARNING_RATE = 1e-5`（调度器 `eta_min` 为相对因子，参数保持 `0.1` 不动）。
+- **`GRAD_CLIP_NORM`**：`5.0` → **`1.0`**；**`GRADIENT_ACCUMULATION_STEPS`**：`1` → **`16`**（有效 batch 放大，配合更高 LR 稳定梯度尺度）。
+- **`WarmupCosineScheduler.get_lr` warmup 公式**：`factor = (step+1)/(warmup_steps+1e-8)`（从 ~0 爬）→ `factor = eta_min + (1−eta_min)·(step+1)/(warmup_steps+1e-8)`（**从 `eta_min` 起爬**），使段间热重启不归零。
+
+### 变更范围
+- ultra3：12 个 0010 文件（`210/212/2125/310/312/3125` 的 elite 与 elitelinux）。
+- 旗舰版：`0.85B1/3120010elitelinux.py`（其 `GRAD_CLIP_NORM=1.0` / `GRADIENT_ACCUMULATION_STEPS=16` 已是目标值，未重复改动）。
+- release 仓：`v9/` 的 4 个文件（`3120010elite.py`、`31250010elite.py`、`3120010elitelinux.py`、`31250010elitelinux.py`）。
+
+### 边界与注意
+- ✅ **语法与配置已校验（实测）**：13 个文件通过 AST 解析；逐项断点核对（`LEARNING_RATE` / `GRAD_CLIP_NORM` / `GRADIENT_ACCUMULATION_STEPS` / `ADAM_BETA2` / `WARMUP_STEPS_PER_SEGMENT` / `COSINE_ETA_MIN` / 调度器 warmup 公式）全部符合预期；BOM 与换行格式保持不变（`2120010elite.py` 与旗舰版文件的「无 BOM」状态一并保留）。
+- ⚠️ **收敛效果未实测（未验证）**：本版只声称「学习率与二阶矩配置已按预训练量级修正、语法与配置核对通过」，**不声称**已打破 8.47 平台 / 改善 PPL。平台化归因（学习率过低 / 模型容量饱和 / 数据信息量不足）**仍未经对照实验分离**；`beta2=0.95` 数值为 LLM 主流配置，但「小 batch ⇒ 必须降 beta2」的机制解释**尚待验证**。
+- ⚠️ **仅对「从零训练」或「迁移旧 checkpoint」生效**：加载既有 `brain.pt` 会沿用旧优化器状态，本版改动主要体现在后续训练的学习率调度上。
+
+---
+
 ## 9.0.0 — 2026-10-12
 
 > 定位：在 009（**含 8.1.1 初始化修复**）基础上派生 **0010 变体** —— 新增**多 token 预测（MTP, Multi-Token Prediction）**：用**共享 `output_norm`** 输出的多个轻量头监督同一隐状态 `norm_last`，主头预测 t+1、MTP 头预测 t+2，以**多时间尺度**目标打破「h 恒定即可最小化 loss」的死通道。**仅追加辅助监督项**，主头结构 / 数学路径不变（`MTP_LOSS_SCALING=0` 或 `MTP_NUM_HEADS≤1` 时与 009 逐位一致）。

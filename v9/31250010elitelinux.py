@@ -82,15 +82,17 @@ except ImportError:
 VOCAB_SIZE = 10000
 HIDDEN_SIZE = 256
 NUM_LAYERS = 12
-LEARNING_RATE = 0.001
+LEARNING_RATE = 1.0e-4
 WEIGHT_DECAY = 0.01
-GRAD_CLIP_NORM = 5.0
+GRAD_CLIP_NORM = 1.0
 BATCH_SIZE = 1
 EPOCHS = 1
 LOG_INTERVAL = 1
 TEMPERATURE = 0.7
 TOP_P = 0.9
-GRADIENT_ACCUMULATION_STEPS = 1
+GRADIENT_ACCUMULATION_STEPS = 16
+WARMUP_STEPS_PER_SEGMENT = 50   # 每段预热步数：段间从 COSINE_ETA_MIN 平滑升至峰值，不从 0 归零
+ADAM_BETA2 = 0.95               # AdamW 二阶矩衰减：按 token 半衰期从 0.999 降到 0.95
 USE_GRADIENT_CHECKPOINT = True   # True=省内存但慢30%，False=快但费内存
 WINDOW_OVERLAP = 0.0               # 0.0=不重叠, 0.5=50%%重叠
 USE_AMP = True                   # 实值化后可安全开启 bf16 AMP（线性层/embedding 走 bf16，SSM 扫描与矩阵指数锁 fp32）
@@ -187,7 +189,7 @@ MINI_STATE_DIM = 2            # 迷你状态维度，必须偶数，K = MINI_STA
 # ============================================================
 COSINE_T_0 = 1000            # 第一个余弦周期的步数（步数到达后重启学习率）
 COSINE_T_MULT = 1            # 每次重启后周期倍数（1=固定周期，2=周期翻倍）
-COSINE_ETA_MIN = 1e-6        # 学习率下限（余弦退火的最低点，防止学习率归零）
+COSINE_ETA_MIN = 1e-5        # 学习率下限（文档值；实际段末 LR = eta_min(0.1) × LEARNING_RATE = 1e-5）
 
 # ============================================================
 # 冻结控制参数
@@ -846,7 +848,7 @@ class WarmupCosineScheduler(_LRScheduler):
     def get_lr(self):
         step = self.last_epoch
         if step < self.warmup_steps:
-            factor = (step + 1) / (self.warmup_steps + 1e-8)
+            factor = self.eta_min + (1.0 - self.eta_min) * (step + 1) / (self.warmup_steps + 1e-8)
         elif self.decay_steps is not None:
             t = step - self.warmup_steps
             progress = min(t / self.decay_steps, 1.0)
@@ -3260,7 +3262,7 @@ def build_optimizer(param_groups, lr, weight_decay, fallback_factory):
     LINUX_OPTIMIZER='bnb8bit'（默认）时行为与 009 完全一致。"""
     if LINUX_OPTIMIZER == 'fused_adamw' and DEVICE.type == 'cuda':
         try:
-            opt = torch.optim.AdamW(param_groups, lr=lr, weight_decay=weight_decay, fused=True)
+            opt = torch.optim.AdamW(param_groups, lr=lr, weight_decay=weight_decay, betas=(0.9, ADAM_BETA2), fused=True)
             log_and_print("优化器：torch.optim.AdamW(fused=True)（Linux 单卡融合内核）")
             return opt
         except Exception as _e:
@@ -3268,14 +3270,14 @@ def build_optimizer(param_groups, lr, weight_decay, fallback_factory):
     if LINUX_OPTIMIZER == 'torchao8bit' and DEVICE.type == 'cuda':
         try:
             from torchao.prototype.low_bit_optim import AdamW8bit as _TaoAdamW8bit
-            opt = _TaoAdamW8bit(param_groups, lr=lr, weight_decay=weight_decay)
+            opt = _TaoAdamW8bit(param_groups, lr=lr, weight_decay=weight_decay, betas=(0.9, ADAM_BETA2))
             log_and_print("优化器：torchao 8-bit AdamW（低比特优化器）")
             return opt
         except Exception as _e:
             log_and_print(f"torchao 8bit 初始化失败（{type(_e).__name__}: {_e}），回退后续优化器。")
     if USE_ADAMW8BIT and HAS_BNB and DEVICE.type == 'cuda':
         try:
-            opt = bnb.optim.AdamW8bit(param_groups, lr=lr, weight_decay=weight_decay)
+            opt = bnb.optim.AdamW8bit(param_groups, lr=lr, weight_decay=weight_decay, betas=(0.9, ADAM_BETA2))
             log_and_print("优化器：bitsandbytes AdamW8bit（8-bit 动量状态，约省 36% 优化器显存）")
             return opt
         except Exception as _e:
@@ -3459,11 +3461,11 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
          'weight_decay': 0.0, 'lr': lr},
     ]
     optimizer = build_optimizer(param_groups, lr, weight_decay,
-                                lambda pg, _lr, _wd: torch.optim.AdamW(pg, lr=_lr, weight_decay=_wd))
+                                lambda pg, _lr, _wd: torch.optim.AdamW(pg, lr=_lr, weight_decay=_wd, betas=(0.9, ADAM_BETA2)))
 
     total_updates_per_epoch = max(1, (est_batches_per_epoch + accumulation_steps - 1) // accumulation_steps)
     total_updates = total_updates_per_epoch * epochs
-    warmup_steps = min(2000, int(total_updates * 0.02))
+    warmup_steps = min(WARMUP_STEPS_PER_SEGMENT, max(1, total_updates))
     decay_steps = max(1, total_updates - warmup_steps) if total_updates > 0 else None
     scheduler = WarmupCosineScheduler(optimizer, warmup_steps=warmup_steps, decay_steps=decay_steps, eta_min=0.1)
     log_and_print(f"训练总参数更新次数 = {total_updates}, 预热步数 = {warmup_steps}, 初始学习率 = {lr}")

@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.0.0`（2026-10-12）** —— **0010 多 token 预测（MTP）**：在 009（含 8.1.1 初始化修复）基础上派生 **0010 变体**，用**共享 `output_norm`** 的多头监督（主头预测 t+1、MTP 头预测 t+2）给共享隐状态 `norm_last` 施加多时间尺度目标，从结构上打破「h 恒定即可最小化 loss」的死通道。**仅追加辅助监督项，主头数学路径不变；`MTP_LOSS_SCALING=0` 时与 009 逐位一致。**
+> **当前最新 / Latest：`9.0.1`（2026-10-13）** —— **0010 训练配置修正（预训练级学习率）**：把 0010 全族的峰值学习率提到**预训练量级**、按 token 半衰期下调 AdamW `beta2`、每段从 `eta_min` **平滑重启 warmup（不归零）**，用于纠正 0.85B 在 ~14M token 下 loss 长期平台化（8.47）的欠学习配置。**仅改优化器超参数，不改任何模型结构 / 数学路径 / 初始化。**
 
-> 上一版 / Previous：`8.1.1`（2026-10-12）—— 009 系列初始化修复：修正 `delta_scale`（−2.5→−1.0）/ `B_scale`（0.0→1.0）初值与 `delta_linear`/`B_linear` 的 weight_norm 增益（0.1→1.0），解除「δ 小 → 注入小 → 梯度小」的初始化锁死。
+> 上一版 / Previous：`9.0.0`（2026-10-12）—— **0010 多 token 预测（MTP）**：在 009（含 8.1.1 初始化修复）基础上派生 **0010 变体**，用**共享 `output_norm`** 的多头监督（主头预测 t+1、MTP 头预测 t+2）给共享隐状态 `norm_last` 施加多时间尺度目标，从结构上打破「h 恒定即可最小化 loss」的死通道。`MTP_LOSS_SCALING=0` 时与 009 逐位一致。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -85,7 +85,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
-| **9.0.0** | **2026-10-12** | **0010 多 token 预测（MTP）：共享 `output_norm` 多头监督（主头 t+1 / MTP 头 t+2），多时间尺度目标打破「h 恒定」死通道；独立可关，`MTP_LOSS_SCALING=0` 时与 009 逐位一致** |
+| **9.0.1** | **2026-10-13** | **0010 训练配置修正：峰值 LR 提至预训练量级（1e-4）+ AdamW `beta2` 0.999→0.95（按 token 半衰期）+ 每段 warmup 50 步从 `eta_min` 平滑重启 + 梯度裁剪 5.0→1.0；仅改优化器超参，结构/数学/初始化不变** |
+| 9.0.0 | 2026-10-12 | 0010 多 token 预测（MTP）：共享 `output_norm` 多头监督（主头 t+1 / MTP 头 t+2），多时间尺度目标打破「h 恒定」死通道；独立可关，`MTP_LOSS_SCALING=0` 时与 009 逐位一致 |
 | 8.1.1 | 2026-10-12 | 009 初始化修复：`delta_scale` −2.5→−1.0、`B_scale` 0.0→1.0、`delta_linear`/`B_linear` 的 weight_norm gain 0.1→1.0，修复「SSM 从未激活」 |
 | 8.1.0 | 2026-10-12 | 009elitelinux 变体：Linux 单卡编译加速（`torch.compile`/Inductor-Triton）+ DataLoader 多进程，独立可关、全关逐位一致 |
 | 8.0.0 | 2026-10-11 | 009 变体：遗忘平衡注入 `B̄ = B̃·(1−|A|)`，峰值增益解耦恒等 `G_peak ≡ |B̃|`、耦合有界（≲3.5×） |
@@ -95,6 +96,23 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 9.0.1 核心变更
+
+> 定位：**0010 系列的训练超参数修正**（**仅改优化器配置，不改模型结构 / 数学路径 / 初始化**）。针对 0.85B 旗舰模型在 ~14M token 训练下 loss 长期平台化（step≈3000 起稳定在 8.47，随机基线 `ln(40000)≈10.60`）的现象，把学习率提到**预训练量级**并同步下调 AdamW 二阶矩衰减。
+
+- **改动（文件头常量，全族统一）**：
+  - `LEARNING_RATE`：`1e-3`/`3e-5` → **`1.0e-4`**（预训练量级；0.85B 建议区间 1e-4 ~ 3e-4）。
+  - `ADAM_BETA2`（**新增常量**）：`0.999` → **`0.95`**，经 `betas=(0.9, ADAM_BETA2)` 接入 bnb8bit / fused AdamW / torchao8bit / 回退 AdamW **全部优化器分支**。
+  - `WARMUP_STEPS_PER_SEGMENT`（**新增常量**）：**`50`**；分段训练时每段从 `eta_min` 平滑升至峰值，而非从 0 归零。
+  - `COSINE_ETA_MIN`：`1e-6` → **`1e-5`**（文档值）；实际段末 LR = `eta_min(0.1) × LEARNING_RATE = 1e-5`。
+  - `GRAD_CLIP_NORM`：`5.0` → **`1.0`**；`GRADIENT_ACCUMULATION_STEPS`：`1` → **`16`**（有效 batch 放大，配合更高 LR 稳定梯度尺度）。
+- **调度器改动**：`WarmupCosineScheduler.get_lr` 的 warmup 段由 `factor = (step+1)/(warmup_steps+1e-8)`（从 ~0 爬）改为 `factor = eta_min + (1−eta_min)·(step+1)/(warmup_steps+1e-8)`（**从 `eta_min` 起爬**），使段间热重启不归零。
+- **变更范围**：ultra3 的 12 个 0010 文件（6 elite + 6 elitelinux）；旗舰版 `0.85B1/3120010elitelinux.py`；release 仓 `v9/` 的 4 个文件。
+
+### 验证与边界
+- ✅ **语法与配置已校验（实测）**：13 个文件通过 AST 解析，且逐项断点核对（`LEARNING_RATE` / `GRAD_CLIP_NORM` / `GRADIENT_ACCUMULATION_STEPS` / `ADAM_BETA2` / `WARMUP_STEPS_PER_SEGMENT` / `COSINE_ETA_MIN` / 调度器 warmup 公式）全部符合预期，BOM 与换行格式保持不变。
+- ⚠️ **收敛效果未实测（未验证）**：本版只声称「学习率与二阶矩配置已按预训练量级修正、语法与配置核对通过」，**不声称**已打破 8.47 平台 / 改善 PPL。平台化归因（学习率过低 / 模型容量饱和 / 数据信息量不足）**仍未经对照实验分离**；`beta2=0.95` 数值为 LLM 主流配置，但「小 batch ⇒ 必须降 beta2」的机制解释**尚待验证**。
 
 ## 🚀 9.0.0 核心变更
 
@@ -411,7 +429,8 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
-| **9.0.0** | **2026-10-12** | **0010 multi-token prediction (MTP): shared `output_norm` multi-head supervision (main head t+1 / MTP head t+2), multi-timescale targets break the "constant h" dead channel; independently switchable, bit-identical to 009 when `MTP_LOSS_SCALING=0`** |
+| **9.0.1** | **2026-10-13** | **0010 training-config fix: peak LR raised to pretraining scale (1e-4) + AdamW `beta2` 0.999→0.95 (per-token half-life) + 50-step warmup restarting smoothly from `eta_min` + grad clip 5.0→1.0; optimizer hyperparameters only — architecture / math / init unchanged** |
+| 9.0.0 | 2026-10-12 | 0010 multi-token prediction (MTP): shared `output_norm` multi-head supervision (main head t+1 / MTP head t+2), multi-timescale targets break the "constant h" dead channel; independently switchable, bit-identical to 009 when `MTP_LOSS_SCALING=0` |
 | 8.1.1 | 2026-10-12 | 009 initialization fix: `delta_scale` −2.5→−1.0, `B_scale` 0.0→1.0, weight_norm gain of `delta_linear`/`B_linear` 0.1→1.0 — fixes "the SSM never activates" |
 | 8.1.0 | 2026-10-12 | 009elitelinux variant: Linux single-GPU compile acceleration (`torch.compile`/Inductor-Triton) + multiprocess DataLoader, independently switchable, bit-identical when all off |
 | 8.0.0 | 2026-10-11 | 009 variant: forget-balanced injection `B̄ = B̃·(1−|A|)`, peak gain `G_peak ≡ |B̃|` structurally bounded |
@@ -421,6 +440,23 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 9.0.1
+
+> Positioning: a **training-hyperparameter fix for the 0010 family** (**optimizer config only — no change to model architecture / math / initialization**). Motivated by the 0.85B flagship plateauing for a long stretch (stable at 8.47 from step≈3000, vs. the random baseline `ln(40000)≈10.60`) at ~14M tokens, it raises the learning rate to the **pretraining scale** and simultaneously lowers AdamW's second-moment decay.
+
+- **Changes (header constants, applied to the whole family)**:
+  - `LEARNING_RATE`: `1e-3`/`3e-5` → **`1.0e-4`** (pretraining scale; the suggested range for 0.85B is 1e-4 ~ 3e-4).
+  - `ADAM_BETA2` (**new constant**): `0.999` → **`0.95`**, wired via `betas=(0.9, ADAM_BETA2)` into **all optimizer branches** — bnb8bit / fused AdamW / torchao8bit / fallback AdamW.
+  - `WARMUP_STEPS_PER_SEGMENT` (**new constant**): **`50`**; each segment warms up smoothly from `eta_min` rather than restarting from 0.
+  - `COSINE_ETA_MIN`: `1e-6` → **`1e-5`** (documentation value); the actual end-of-segment LR = `eta_min(0.1) × LEARNING_RATE = 1e-5`.
+  - `GRAD_CLIP_NORM`: `5.0` → **`1.0`**; `GRADIENT_ACCUMULATION_STEPS`: `1` → **`16`** (larger effective batch, stabilizing the gradient scale for the higher LR).
+- **Scheduler change**: in `WarmupCosineScheduler.get_lr`, the warmup factor goes from `factor = (step+1)/(warmup_steps+1e-8)` (climbing from ~0) to `factor = eta_min + (1−eta_min)·(step+1)/(warmup_steps+1e-8)` (**climbing from `eta_min`**), so inter-segment warm restarts do not fall back to zero.
+- **Scope**: the 12 ultra3 0010 files (6 elite + 6 elitelinux); the flagship `0.85B1/3120010elitelinux.py`; the 4 files in the release repo `v9/`.
+
+### Validation & Boundaries
+- ✅ **Syntax and config verified (measured)**: all 13 files parse under AST, and every checkpoint was checked item by item (`LEARNING_RATE` / `GRAD_CLIP_NORM` / `GRADIENT_ACCUMULATION_STEPS` / `ADAM_BETA2` / `WARMUP_STEPS_PER_SEGMENT` / `COSINE_ETA_MIN` / the scheduler warmup formula); BOM and line endings are preserved.
+- ⚠️ **Convergence effect not yet measured (unverified)**: this release only claims "the LR and second-moment config are corrected to the pretraining scale, and syntax/config checks pass"; it does **not** claim the 8.47 plateau is broken or that PPL improved. The plateau's attribution (LR too low / model capacity saturated / insufficient data information) is **still not separated by a controlled experiment**; `beta2=0.95` is a mainstream LLM value, but the mechanism claim "small batch ⇒ beta2 must be lowered" **remains to be verified**.
 
 ## 🚀 What's New in 9.0.0
 
@@ -665,5 +701,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.0.0
-Last Updated: 2026-10-12
+Version: 9.0.1
+Last Updated: 2026-10-13
