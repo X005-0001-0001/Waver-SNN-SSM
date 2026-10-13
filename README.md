@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.0.2`（2026-10-13）** —— **0010 训练可观测性与工程修复**：补上 `grad_norm` 监控（新日志字段 `GN:`），并修复 `fallback_factory` 参数名 bug、把 MTP 头 CE 按 `LOSS_CHUNK_SIZE` 分块、把 RMSNorm `weight` 移出 weight-decay 组。**不改 9.0.1 已定的 LR / beta2 / clip 数值。**
+> **当前最新 / Latest：`9.1.0`（2026-10-13）** —— **0011 系列：残差连接的 LayerScale 结构化稳定改造**。把「残差 = 恒等加法」改为「残差 = `γ_i·wave_out + layer_input`」，每层一个可学习标量 γ_i（进 no_decay，初值 1e-3），从结构上压低「深度连乘」早期的各层反向增益乘积。**只改残差，不改 SSM 内部数学；开关 `LAYER_SCALE_ENABLED=False` 时与 0010 逐位一致。**
 
-> 上一版 / Previous：`9.0.1`（2026-10-13）—— **0010 训练配置修正（预训练级学习率）**：把 0010 全族的峰值学习率提到**预训练量级**、按 token 半衰期下调 AdamW `beta2`、每段从 `eta_min` **平滑重启 warmup（不归零）**，用于纠正 0.85B 在 ~14M token 下 loss 长期平台化（8.47）的欠学习配置。**仅改优化器超参数，不改任何模型结构 / 数学路径 / 初始化。**
+> 上一版 / Previous：`9.0.2`（2026-10-13）—— **0010 训练可观测性与工程修复**：新增 `grad_norm` 监控（日志字段 `GN:`）+ 修复 `fallback_factory` 参数名 bug + MTP 头 CE 按 `LOSS_CHUNK_SIZE` 分块 + RMSNorm `weight` 移出 weight-decay 组。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -62,14 +62,14 @@ Waver-SNN-SSM/
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界 / δ 下限（312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite）
 ├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）+ Linux 单卡加速（312009elitelinux / 3125009elitelinux）+ 初始化修复（8.1.1）
-├── v9/          # 0010 多 token 预测（MTP，共享 output_norm 多头监督）（3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux）
+├── v9/          # 0010 多 token 预测（MTP）+ 0011 残差 LayerScale（3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux / 3120011elite / 31250011elite / 3120011elitelinux / 31250011elitelinux）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）；v8.0.0 起增设 `009` 变体（遗忘平衡注入，峰值增益结构性有界，默认开启）；v8.1.0 起增设 `009elitelinux` 变体（Linux 单卡编译加速 + 多进程数据加载，独立可关，默认开启；全关时与对应 009 逐位一致）；v9.0.0 起增设 `0010` 变体（多 token 预测 MTP，共享 `output_norm` 多头监督，独立可关，默认开启；关闭时与对应 009 逐位一致）。
+**命名规则**：`312005elite.py` 为主族（层内耦合），`312505elite.py` 为 x25 族（层外耦合）。**v5 起两族同时发布**；v4 及以前仅发布 `31200x`。每个 `.py` 均为**单文件**、自包含全流程（训练 / 推理 / 强化学习）。v7.1.0 起主族 / x25 族各增设 `017` 变体（θ 结构性上界，默认开启）；v7.2.0 起再增设 `008` 变体（回退 θ 上界 + 新增 δ 下限，默认开启）；v8.0.0 起增设 `009` 变体（遗忘平衡注入，峰值增益结构性有界，默认开启）；v8.1.0 起增设 `009elitelinux` 变体（Linux 单卡编译加速 + 多进程数据加载，独立可关，默认开启；全关时与对应 009 逐位一致）；v9.0.0 起增设 `0010` 变体（多 token 预测 MTP，共享 `output_norm` 多头监督，独立可关，默认开启；关闭时与对应 009 逐位一致）；v9.1.0 起增设 `0011` 变体（残差 LayerScale：每层 SSM 输出乘可学习标量 γ_i，进 no_decay、初值 1e-3，独立可关，默认开启；关闭时与对应 0010 逐位一致）。
 
 ## 📜 版本历史
 
@@ -85,6 +85,7 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | 修复 jsonl 路径显存碎片 |
 | 5.0.0 | 2026-10-04 | 数据格式层（messages / reasoning_content / tool_calls）+ 词表 / 分词修复 + 配置精简 |
 | 6.0.0 | 2026-10-10 | 闭式矩阵指数（K=2）+ 批量分词 + 解码 CUDA Graph 默认启用 |
+| **9.1.0** | **2026-10-13** | **0011 残差 LayerScale：把「残差 = 恒等加法」改为「残差 = `γ_i·wave_out + layer_input`」，每层一个可学习标量 γ_i（进 no_decay，初值 1e-3），结构性压低「深度连乘」早期各层反向增益的 26 层连乘；训练 forward / prefill / step 三处残差路径统一覆盖，开关默认开启，关闭时与 0010 逐位一致** |
 | **9.0.2** | **2026-10-13** | **0010 训练可观测性与工程修复：新增 `grad_norm` 监控（日志字段 `GN:`）+ 修复 `fallback_factory` 参数名 bug + MTP 头 CE 按 `LOSS_CHUNK_SIZE` 分块 + RMSNorm `weight` 移出 weight-decay 组；不改 9.0.1 的 LR/beta2/clip 数值** |
 | 9.0.1 | 2026-10-13 | 0010 训练配置修正：峰值 LR 提至预训练量级（1e-4）+ AdamW `beta2` 0.999→0.95（按 token 半衰期）+ 每段 warmup 50 步从 `eta_min` 平滑重启 + 梯度裁剪 5.0→1.0；仅改优化器超参，结构/数学/初始化不变 |
 | 9.0.0 | 2026-10-12 | 0010 多 token 预测（MTP）：共享 `output_norm` 多头监督（主头 t+1 / MTP 头 t+2），多时间尺度目标打破「h 恒定」死通道；独立可关，`MTP_LOSS_SCALING=0` 时与 009 逐位一致 |
@@ -97,6 +98,20 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | 菜单 11 切分保留 system 段 + 切分长度对齐 + 日志降噪 |
 | 7.0.1 | 2026-10-10 | 修复 system 段丢失 + 以 user 结尾样本护栏 |
 | 7.0.0 | 2026-10-10 | 训练步 CUDA Graph + 8-bit AdamW + 矩阵指数开关集中化 |
+
+## 🚀 9.1.0 核心变更
+
+> 定位：**0011 系列 —— 残差连接的 LayerScale 结构化稳定改造**（**只给每层残差加一个可学习标量 γ_i，不改 SSM 内部数学路径**）。诊断已实测确认：0.85B（26 层）的梯度爆炸**从初始化第 1 步即存在**，是**深度连乘**（分层剖面单调，L0 层梯度比顶层高约 6 个数量级，裁剪前总梯度范数达 1e7 量级，loss 全程钉死）；且序列长度由 256 增至 2048 时范数**不升反降**、`delta_v_min` 全程稳定 >1.0 —— 排除了「时间轴前缀和」与「weight_norm 方向退化」两条假设。
+
+- **LayerScale（每层残差可学习缩放 γ_i）**：把「残差 = 恒等加法 `out + layer_input`」改为「残差 = `γ_i·wave_out + layer_input`」。γ_i 为**每层独立的可学习标量**（单张量参数 `layer_scales`，形状 `(num_layers, 1)`，进 **no_decay** 组，初值 `LAYER_SCALE_INIT = 1e-3`）。早期 `γ_i·(层内反向增益) ≪ 1`，层间反向传递近似恒等（深度连乘被自动衰减）；模型按需把有贡献的层 γ_i 抬起 —— **无阈值、无钳位、无下界**，纯结构性。
+- **三处残差插入点统一覆盖**：训练 forward、并行 prefill、逐步 step（解码）三条路径的残差乘法统一乘 γ_i，保证训练 / 推理严格同构。
+- **开关 `LAYER_SCALE_ENABLED`（默认 True）**：置 `False` 时 γ 恒为 1（`layer_scales=None`，forward 不做缩放），与 0010 逐位一致。
+- **变更范围**：ultra3 的 12 个 0011 文件（`210/212/2125/310/312/3125` 的 elite 与 elitelinux）；旗舰版 `0.85B1/3120011elitelinux.py`；release 仓 `v9/` 新增 4 个文件（`3120011elite.py` / `31250011elite.py` / `3120011elitelinux.py` / `31250011elitelinux.py`）。
+
+### 验证与边界
+- ✅ **语法与格式已校验（实测）**：13 个文件通过 AST 解析；每文件相对其 0010 源均为**最小差异 `+25/-0` 行**（x25 族因改写 `no_decay` 同一行计 `+25/-1`）；三处残差插入点、`layer_scales` 参数、`no_decay` 命中均逐项核对通过；BOM 与换行保持不变。
+- ⚠️ **梯度爆炸修复效果「仅结构性论证 / 待端到端实测」**：γ_i 初值 1e-3 使早期层间反向增益乘积从 26 层连乘（≈1.8^26）压到 ≈1.0，这是**由残差缩放公式直接推出的**；但「loss 能否脱离平台 / PPL 能否改善」**尚需端到端训练验证**，本版**不声称**已修复收敛。
+- ⚠️ **加载旧 checkpoint 的差异（未验证）**：0011 新增 `layer_scales` 参数，加载 0010 的 `brain.pt` 时该参数取初值 1e-3（非 1），早期前向与前版**不逐位一致**。
 
 ## 🚀 9.0.2 核心变更
 
@@ -422,14 +437,14 @@ Waver-SNN-SSM/
 ├── v6/          # closed-form matrix exponential + batched tokenization (312006elite / 312506elite)
 ├── v7/          # training-step CUDA Graph + 8-bit AdamW + θ structural bound / δ floor (312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite)
 ├── v8/          # forget-balanced injection · structurally bounded peak gain (312009elite / 3125009elite) + Linux single-GPU accel (312009elitelinux / 3125009elitelinux)
-├── v9/          # 0010 multi-token prediction (MTP, shared output_norm multi-head supervision) (3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux)
+├── v9/          # 0010 multi-token prediction (MTP) + 0011 residual LayerScale (3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux / 3120011elite / 31250011elite / 3120011elitelinux / 31250011elitelinux)
 ├── compare/     # comparison: round3 figure set + v6 report + dashboards
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
 └── README.md / CHANGELOG.md / LICENSE / CITATION.cff / DOI.txt
 ```
 
-**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default); from v8.0.0 it adds a `009` variant (forget-balanced injection, structurally bounded peak gain, on by default); from v8.1.0 it adds a `009elitelinux` variant (Linux single-GPU compile acceleration + multiprocess data loading, independently switchable, on by default; with all switches off it is bit-identical to the corresponding 009); from v9.0.0 it adds a `0010` variant (multi-token prediction, MTP, with shared `output_norm` multi-head supervision, independently switchable, on by default; when off it is bit-identical to the corresponding 009).
+**Naming**: `312005elite.py` is the main family (intra-layer coupling); `312505elite.py` is the x25 family (inter-layer coupling). **Both families ship from v5 onward**; v4 and earlier ship only `31200x`. Every `.py` is a **single self-contained file** covering training / inference / RL. From v7.1.0 each family also ships an `017` variant (θ structural bound, on by default); from v7.2.0 it additionally ships an `008` variant (θ bound reverted + δ floor, on by default); from v8.0.0 it adds a `009` variant (forget-balanced injection, structurally bounded peak gain, on by default); from v8.1.0 it adds a `009elitelinux` variant (Linux single-GPU compile acceleration + multiprocess data loading, independently switchable, on by default; with all switches off it is bit-identical to the corresponding 009); from v9.0.0 it adds a `0010` variant (multi-token prediction, MTP, with shared `output_norm` multi-head supervision, independently switchable, on by default; when off it is bit-identical to the corresponding 009); from v9.1.0 it adds a `0011` variant (residual LayerScale: each layer's SSM output is scaled by a learnable scalar γ_i, placed in no_decay with an initial value of 1e-3, independently switchable, on by default; when off it is bit-identical to the corresponding 0010).
 
 ## 📜 Version History
 
@@ -445,6 +460,7 @@ Waver-SNN-SSM/
 | 4.2.0 | 2026-10-02 | jsonl memory-fragmentation fix |
 | 5.0.0 | 2026-10-04 | v5 data-format layer (messages / reasoning_content / tool_calls) + tokenizer fixes + config cleanup |
 | 6.0.0 | 2026-10-10 | Closed-form matrix exponential (K=2) + batched tokenization + CUDA Graph decoding on by default |
+| **9.1.0** | **2026-10-13** | **0011 residual LayerScale: changes the residual from an identity add to `γ_i·wave_out + layer_input` with a per-layer learnable scalar γ_i (in no_decay, init 1e-3), structurally damping the 26-layer product of per-layer backward gains; training-forward / prefill / step residual paths all covered, switch on by default, bit-identical to 0010 when off** |
 | **9.0.2** | **2026-10-13** | **0010 training-observability and engineering fix: new `grad_norm` monitoring (log field `GN:`) + fixed the latent `fallback_factory` arg-name bug + chunked CE for MTP heads (`LOSS_CHUNK_SIZE`) + RMSNorm `weight` moved out of the weight-decay group; no change to the 9.0.1 LR/beta2/clip values** |
 | 9.0.1 | 2026-10-13 | 0010 training-config fix: peak LR raised to pretraining scale (1e-4) + AdamW `beta2` 0.999→0.95 (per-token half-life) + 50-step warmup restarting smoothly from `eta_min` + grad clip 5.0→1.0; optimizer hyperparameters only — architecture / math / init unchanged |
 | 9.0.0 | 2026-10-12 | 0010 multi-token prediction (MTP): shared `output_norm` multi-head supervision (main head t+1 / MTP head t+2), multi-timescale targets break the "constant h" dead channel; independently switchable, bit-identical to 009 when `MTP_LOSS_SCALING=0` |
@@ -457,6 +473,20 @@ Waver-SNN-SSM/
 | 7.0.2 | 2026-10-10 | Menu 11 segmentation keeps the system span + aligned segmentation length + log-noise cleanup |
 | 7.0.1 | 2026-10-10 | Fix dropped system span + guard for user-ending samples |
 | 7.0.0 | 2026-10-10 | Training-step CUDA Graph + 8-bit AdamW + centralized matrix-exponential switches |
+
+## 🚀 What's New in 9.1.0
+
+> Positioning: the **0011 family — a structural LayerScale stabilization of the residual connection** (**only adds a learnable scalar γ_i per layer's residual; no change to the SSM's internal math**). Diagnostics confirmed by measurement: for the 0.85B (26-layer) model the gradient explosion is present **from the very first step** and is a **depth-wise multiplicative blow-up** (the per-layer profile is monotone, the L0 gradient is ~6 orders of magnitude above the top layer, and the pre-clip total grad norm reaches ~1e7 while loss stays pinned); raising the sequence length from 256 to 2048 does **not** increase the norm (it drops), and `delta_v_min` stays >1.0 throughout — ruling out both the "time-axis prefix-sum" and "weight_norm direction degeneration" hypotheses.
+
+- **LayerScale (per-layer learnable residual scale γ_i)**: changes the residual from an identity add `out + layer_input` to `γ_i·wave_out + layer_input`. γ_i is a **per-layer learnable scalar** (a single tensor parameter `layer_scales`, shape `(num_layers, 1)`, placed in the **no_decay** group, initialized to `LAYER_SCALE_INIT = 1e-3`). Early on `γ_i·(intra-layer backward gain) ≪ 1`, so the inter-layer backward transfer stays near identity (the depth-wise product is automatically damped); the model raises γ_i for the layers that contribute — **no threshold, no clamp, no floor**; purely structural.
+- **All three residual insertion sites covered**: the training forward, the parallel prefill, and the per-step decode paths all multiply the residual by γ_i, keeping training/inference strictly isomorphic.
+- **Switch `LAYER_SCALE_ENABLED` (on by default)**: when `False`, γ stays at 1 (`layer_scales=None`, no scaling in forward) and the file is bit-identical to 0010.
+- **Scope**: the 12 ultra3 0011 files; the flagship `0.85B1/3120011elitelinux.py`; 4 new files under the release repo `v9/` (`3120011elite.py` / `31250011elite.py` / `3120011elitelinux.py` / `31250011elitelinux.py`).
+
+### Verification and boundaries
+- ✅ **Syntax and format verified (measured)**: all 13 files parse under AST; each differs from its 0010 source by a **minimal `+25/-0` lines** (the x25 family shows `+25/-1` because it rewrites a line of `no_decay`); the three residual sites, the `layer_scales` parameter and the `no_decay` match were all checked item by item; BOM and line endings preserved.
+- ⚠️ **Explosion fix "structurally argued / end-to-end test pending"**: with γ_i initialized to 1e-3, the early inter-layer backward-gain product drops from a 26-layer product (≈1.8^26) to ≈1.0 — this follows **directly from the residual-scaling formula**; whether **loss can leave its plateau / PPL can improve still needs end-to-end training**, and this release does **not** claim the convergence is fixed.
+- ⚠️ **Loading an old checkpoint differs (unverified)**: 0011 adds a `layer_scales` parameter, so loading a 0010 `brain.pt` gives it the 1e-3 init (not 1); early forward passes are **not bit-identical** to the previous version.
 
 ## 🚀 What's New in 9.0.2
 
@@ -733,5 +763,5 @@ This project is licensed under the **GNU General Public License v3.0**. Any use,
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.0.2
+Version: 9.1.0
 Last Updated: 2026-10-13
