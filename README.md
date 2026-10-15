@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.2.0`（2026-10-13）** —— **0012 系列：深度预算归一化**。把残差缩放的 γ_i 由「各层自由可学习标量」升级为「**总预算恒定的份额**」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，非惩罚项、非钳位、无阈值、无死区），把反向深度连乘**结构性封顶**于 `exp(max_i‖J_i‖)`，上界**与层数无关**。**只改残差缩放的参数化，不改 SSM 内部数学；开关 `DEPTH_BUDGET_NORM_ENABLED=False` 时与 0010 逐位一致。**
+> **当前最新 / Latest：`9.2.1`（2026-10-15）** —— **0012 系列：菜单11 样本长度统计修复**。菜单11（受 token 预算约束的分段数据洗选）原先逐轮只累加 `content` 的 token 数与 role/end 开销，**漏计 assistant 的 `reasoning_content`（CoT）**，而训练渲染器在 `TRAIN_ON_REASONING=True` 时会把 CoT 拼进训练段 ⇒ 样本长度被**系统性低估**（按预算 x 洗选实际落出约 x+CoT）。本版补齐该项。**只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器。**
 
-> 上一版 / Previous：`9.1.0`（2026-10-13）—— **0011 系列：残差连接的 LayerScale 结构化稳定改造**：把「残差 = 恒等加法」改为「残差 = `γ_i·wave_out + layer_input`」，每层一个可学习标量 γ_i（进 no_decay，初值 1e-3），结构性压低「深度连乘」早期的各层反向增益乘积。
+> 上一版 / Previous：`9.2.0`（2026-10-13）—— **0012 系列：深度预算归一化**：残差缩放 `γ_i` 由「各层自由可学习标量」升级为「总预算恒定的份额」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，非惩罚项、非钳位、无阈值、无死区），把反向深度连乘结构性封顶于 `exp(max_i‖J_i‖)`、上界与层数无关；开关 `DEPTH_BUDGET_NORM_ENABLED=False` 时与 0010 逐位一致。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -98,7 +98,21 @@ Waver-SNN-SSM/
 | 9.0.1 | 2026-10-13 | 0010 训练配置修正：峰值 LR 提至预训练量级（1e-4）+ AdamW `beta2` 0.999→0.95（按 token 半衰期）+ 每段 warmup 50 步从 `eta_min` 平滑重启 + 梯度裁剪 5.0→1.0；仅改优化器超参，结构/数学/初始化不变 |
 | 9.0.2 | 2026-10-13 | 0010 训练可观测性与工程修复：新增 `grad_norm` 监控（日志字段 `GN:`）+ 修复 `fallback_factory` 参数名 bug + MTP 头 CE 按 `LOSS_CHUNK_SIZE` 分块 + RMSNorm `weight` 移出 weight-decay 组；不改 9.0.1 的 LR/beta2/clip 数值 |
 | 9.1.0 | 2026-10-13 | 0011 残差 LayerScale：把「残差 = 恒等加法」改为「残差 = `γ_i·wave_out + layer_input`」，每层一个可学习标量 γ_i（进 no_decay，初值 1e-3），结构性压低「深度连乘」早期各层反向增益的 26 层连乘；训练 forward / prefill / step 三处残差路径统一覆盖，开关默认开启，关闭时与 0010 逐位一致 |
-| **9.2.0** | **2026-10-13** | **0012 深度预算归一化：残差缩放 γ_i 由「各层自由标量」升级为「总预算恒定的份额」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，无阈值/钳位/死区），把反向深度连乘结构性封顶于 `exp(max_i‖J_i‖)`、上界与层数无关；初值 ρ̃ 全 1 ⇒ γ≡1/L；开关默认开启，关闭时与 0010 逐位一致** |
+| 9.2.0 | 2026-10-13 | 0012 深度预算归一化：残差缩放 γ_i 由「各层自由标量」升级为「总预算恒定的份额」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，无阈值/钳位/死区），把反向深度连乘结构性封顶于 `exp(max_i‖J_i‖)`、上界与层数无关；初值 ρ̃ 全 1 ⇒ γ≡1/L；开关默认开启，关闭时与 0010 逐位一致 |
+| **9.2.1** | **2026-10-15** | **0012 菜单11 样本长度统计修复：`p4_segment_dataset` 逐轮累加补计 assistant 的 `reasoning_content`（CoT）—— 原漏计 CoT 导致样本长度被系统性低估（按预算 x 洗选实际落出约 x+CoT）；只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器** |
+
+## 🚀 9.2.1 核心变更
+
+> 定位：**0012 系列的菜单11 样本长度统计修复**（**只改「受 token 预算约束的分段数据洗选」这一处的长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器**）。菜单11（`p4_segment_dataset`）在估算每条候选样本长度时，逐轮只累加了 `content` 的 token 数与 role/end 开销，**漏计了 assistant 轮的 `reasoning_content`（CoT）**；而训练渲染器 `render_messages` 在 `TRAIN_ON_REASONING=True` 时会把 CoT 拼进训练段 ⇒ 样本长度被**系统性低估**，按预算 x 洗选实际会落出约 x+CoT 的长度。本版补齐该项。
+
+- **菜单11 长度统计补计 CoT**：`p4_segment_dataset` 的逐轮累加在 `pair_tokens += len(ids) + 2` 之后追加——若 `TRAIN_ON_REASONING` 且该轮为 `assistant`，取 `reasoning_content`，非空则 `pair_tokens += len(tokenizer.encode(str(rc)))`。口径与既有的 `content` 计数一致（`+2` 已覆盖 `<|assistant|>` / `<|end|>` 开销）。
+- **同步旗舰版副本**：由 `d:\旗舰版\0.85B1\3120012elitelinux.py` 应用同一修复生成 `d:\旗舰版\3120012elitelinux.py`（参数与 0.85B1 对齐，仅含该最小改动）。
+- **变更范围**：ultra3 的 12 个 0012 文件（`210/212/2125/310/312/3125` 的 elite 与 elitelinux）；旗舰版 `d:\旗舰版\3120012elitelinux.py`；release 仓 `v9/` 的 4 个 0012 文件（`3120012elite.py` / `31250012elite.py` / `3120012elitelinux.py` / `31250012elitelinux.py`）。
+
+### 验证与边界
+- ✅ **语法与格式已校验（实测）**：13 个文件通过 AST 解析；每个文件相对 9.2.0 版均为**最小差异 `+4/-0` 行**（仅新增 CoT 计数 4 行）；BOM 与换行保持不变。
+- ⚠️ **效果未端到端实测（未验证）**：本版只声称「菜单11 的长度估算已把 CoT 计入、与实际渲染段口径一致」，**不声称**已用真实数据回归确认洗选长度；`render_messages` 本身**未改动**，不改变任何已渲染样本内容。
+- ⚠️ **仍存在的同类漏算（只报不改）**：① `_truncate_pairs`（另一处长度计数）未计入 CoT；② 渲染段还会拼接 `tool_calls`，本版**未**计入 —— 若样本含工具调用，长度仍会被低估；③ 逐轮分别 `encode` 与渲染时 `rc+content` 连写拼接，BPE 边界合并可能带来极小的 token 数差异。
 
 ## 🚀 9.2.0 核心变更
 
@@ -491,7 +505,21 @@ Waver-SNN-SSM/
 | 9.0.1 | 2026-10-13 | 0010 training-config fix: peak LR raised to pretraining scale (1e-4) + AdamW `beta2` 0.999→0.95 (per-token half-life) + 50-step warmup restarting smoothly from `eta_min` + grad clip 5.0→1.0; optimizer hyperparameters only — architecture / math / init unchanged |
 | 9.0.2 | 2026-10-13 | 0010 training-observability and engineering fix: new `grad_norm` monitoring (log field `GN:`) + fixed the latent `fallback_factory` arg-name bug + chunked CE for MTP heads (`LOSS_CHUNK_SIZE`) + RMSNorm `weight` moved out of the weight-decay group; no change to the 9.0.1 LR/beta2/clip values |
 | 9.1.0 | 2026-10-13 | 0011 residual LayerScale: changes the residual from an identity add to `γ_i·wave_out + layer_input` with a per-layer learnable scalar γ_i (in no_decay, init 1e-3), structurally damping the 26-layer product of per-layer backward gains; training-forward / prefill / step residual paths all covered, switch on by default, bit-identical to 0010 when off |
-| **9.2.0** | **2026-10-13** | **0012 depth-budget normalization: the residual scale γ_i is upgraded from a per-layer free scalar to a fixed-total-budget share `γ_i = ρ̃_i²/Σ_j ρ̃_j²` (`Σγ≡1` identity, no threshold/clamp/dead-zone), structurally capping the backward depth product at `exp(max_i‖J_i‖)` independent of depth; init ρ̃≡1 ⇒ γ≡1/L; switch on by default, bit-identical to 0010 when off** |
+| 9.2.0 | 2026-10-13 | 0012 depth-budget normalization: the residual scale γ_i is upgraded from a per-layer free scalar to a fixed-total-budget share `γ_i = ρ̃_i²/Σ_j ρ̃_j²` (`Σγ≡1` identity, no threshold/clamp/dead-zone), structurally capping the backward depth product at `exp(max_i‖J_i‖)` independent of depth; init ρ̃≡1 ⇒ γ≡1/L; switch on by default, bit-identical to 0010 when off |
+| **9.2.1** | **2026-10-15** | **0012 menu-11 sample-length accounting fix: `p4_segment_dataset` now also counts the assistant turn's `reasoning_content` (CoT) in its per-turn accumulation — previously the omitted CoT made the sample length systematically underestimated (cleaning with a budget x actually yields ≈ x+CoT); only this one length accumulation is changed — no change to architecture / math / training config / renderer** |
+
+## 🚀 What's New in 9.2.1
+
+> Positioning: a **menu-11 sample-length accounting fix for the 0012 family** (**only the length accumulation inside the token-budget-constrained segmented data cleaning is changed; no change to architecture / math / training config / renderer**). Menu 11 (`p4_segment_dataset`) estimated each candidate sample's length by accumulating only the per-turn `content` tokens plus the role/end overhead, **omitting the assistant turn's `reasoning_content` (CoT)**; meanwhile the training renderer `render_messages` splices the CoT into the training span when `TRAIN_ON_REASONING=True` ⇒ the sample length is **systematically underestimated**, so cleaning with a budget x actually yields ≈ x+CoT. This release closes that gap.
+
+- **Menu 11 now counts the CoT**: inside `p4_segment_dataset`'s per-turn accumulation, after `pair_tokens += len(ids) + 2` it now adds — when `TRAIN_ON_REASONING` and the turn is `assistant`, take `reasoning_content` and, if non-empty, `pair_tokens += len(tokenizer.encode(str(rc)))`. Same basis as the existing `content` accounting (the `+2` already covers the `<|assistant|>` / `<|end|>` overhead).
+- **Flagship copy synced in step**: generated `d:\旗舰版\3120012elitelinux.py` by applying the same fix to `d:\旗舰版\0.85B1\3120012elitelinux.py` (parameters aligned with 0.85B1, containing only this minimal change).
+- **Scope**: the 12 ultra3 0012 files; the flagship `d:\旗舰版\3120012elitelinux.py`; the 4 0012 files under the release repo `v9/`.
+
+### Verification and boundaries
+- ✅ **Syntax and format verified (measured)**: all 13 files parse under AST; each differs from its 9.2.0 version by a **minimal `+4/-0` lines** (only the 4 added CoT-counting lines); BOM and line endings preserved.
+- ⚠️ **Effect not measured end-to-end (unverified)**: this release only claims that "menu 11's length estimate now includes the CoT and matches the actual rendered span's basis"; it does **not** claim a regression on real data; `render_messages` itself is **unchanged**, so no rendered sample content changes.
+- ⚠️ **Remaining same-class omissions (reported, not fixed)**: ① `_truncate_pairs` (the other length count) does not include the CoT; ② the rendered span also appends `tool_calls`, which this release does **not** count — if a sample carries tool calls its length is still underestimated; ③ per-turn `encode` vs. the renderer's concatenated `rc+content` can differ by a tiny number of tokens due to BPE boundary merging.
 
 ## 🚀 What's New in 9.2.0
 

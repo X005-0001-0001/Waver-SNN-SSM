@@ -4381,6 +4381,10 @@ def p4_segment_dataset(input_path, output_path, tokenizer, threshold):
                     content = turn.get('content', '')
                     ids = tokenizer.encode(content)
                     pair_tokens += len(ids) + 2      # 近似：role token + end token 开销
+                    if TRAIN_ON_REASONING and turn.get('role') == 'assistant':
+                        rc = turn.get('reasoning_content')
+                        if rc:
+                            pair_tokens += len(tokenizer.encode(str(rc)))
                 # 与真实样本长度对齐：input_ids = tokens[:-1]（tokens = [BOS] + 各轮 + [EOS]），
                 # 故真实长度 = Σ(len(ids)+2) + 1。不加这 1 会让边界样本多留一条。
                 pair_tokens += 1
