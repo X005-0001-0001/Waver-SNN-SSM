@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.2.1`（2026-10-15）** —— **0012 系列：菜单11 样本长度统计修复**。菜单11（受 token 预算约束的分段数据洗选）原先逐轮只累加 `content` 的 token 数与 role/end 开销，**漏计 assistant 的 `reasoning_content`（CoT）**，而训练渲染器在 `TRAIN_ON_REASONING=True` 时会把 CoT 拼进训练段 ⇒ 样本长度被**系统性低估**（按预算 x 洗选实际落出约 x+CoT）。本版补齐该项。**只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器。**
+> **当前最新 / Latest：`9.2.2`（2026-10-15）** —— **0012 系列：样本长度统计收尾修复**。在 9.2.1 计入菜单11 CoT 的基础上，再补齐两处同类漏算：① `_truncate_pairs`（训练/渲染截断路径）同菜单11 一样漏计 assistant 的 `reasoning_content`（CoT）；② 两处计数均未计入 assistant 段拼接的 `tool_calls`。**只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器。**
 
-> 上一版 / Previous：`9.2.0`（2026-10-13）—— **0012 系列：深度预算归一化**：残差缩放 `γ_i` 由「各层自由可学习标量」升级为「总预算恒定的份额」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，非惩罚项、非钳位、无阈值、无死区），把反向深度连乘结构性封顶于 `exp(max_i‖J_i‖)`、上界与层数无关；开关 `DEPTH_BUDGET_NORM_ENABLED=False` 时与 0010 逐位一致。
+> 上一版 / Previous：`9.2.1`（2026-10-15）—— **0012 系列：菜单11 样本长度统计修复**：菜单11（`p4_segment_dataset`）逐轮累加补计 assistant 的 `reasoning_content`（CoT），原漏计 CoT 导致样本长度被系统性低估（按预算 x 洗选实际落出约 x+CoT）；只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -99,7 +99,22 @@ Waver-SNN-SSM/
 | 9.0.2 | 2026-10-13 | 0010 训练可观测性与工程修复：新增 `grad_norm` 监控（日志字段 `GN:`）+ 修复 `fallback_factory` 参数名 bug + MTP 头 CE 按 `LOSS_CHUNK_SIZE` 分块 + RMSNorm `weight` 移出 weight-decay 组；不改 9.0.1 的 LR/beta2/clip 数值 |
 | 9.1.0 | 2026-10-13 | 0011 残差 LayerScale：把「残差 = 恒等加法」改为「残差 = `γ_i·wave_out + layer_input`」，每层一个可学习标量 γ_i（进 no_decay，初值 1e-3），结构性压低「深度连乘」早期各层反向增益的 26 层连乘；训练 forward / prefill / step 三处残差路径统一覆盖，开关默认开启，关闭时与 0010 逐位一致 |
 | 9.2.0 | 2026-10-13 | 0012 深度预算归一化：残差缩放 γ_i 由「各层自由标量」升级为「总预算恒定的份额」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，无阈值/钳位/死区），把反向深度连乘结构性封顶于 `exp(max_i‖J_i‖)`、上界与层数无关；初值 ρ̃ 全 1 ⇒ γ≡1/L；开关默认开启，关闭时与 0010 逐位一致 |
-| **9.2.1** | **2026-10-15** | **0012 菜单11 样本长度统计修复：`p4_segment_dataset` 逐轮累加补计 assistant 的 `reasoning_content`（CoT）—— 原漏计 CoT 导致样本长度被系统性低估（按预算 x 洗选实际落出约 x+CoT）；只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器** |
+| 9.2.1 | 2026-10-15 | 0012 菜单11 样本长度统计修复：`p4_segment_dataset` 逐轮累加补计 assistant 的 `reasoning_content`（CoT）—— 原漏计 CoT 导致样本长度被系统性低估（按预算 x 洗选实际落出约 x+CoT）；只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器 |
+| **9.2.2** | **2026-10-15** | **0012 样本长度统计收尾修复：补齐两处同类漏算——① `_truncate_pairs` 补计 assistant 的 `reasoning_content`（CoT）；② 菜单11 与 `_truncate_pairs` 两处均补计 assistant 段拼接的 `tool_calls`（复用现成 `_render_tool_calls`、不受 `TRAIN_ON_REASONING` 门控）；只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器** |
+
+## 🚀 9.2.2 核心变更
+
+> 定位：**0012 系列的样本长度统计收尾修复**（**只补全长度估算中遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器**）。9.2.1 已把菜单11 的 CoT 计入，但仍有两处同类漏算：① `_truncate_pairs`（训练 / 渲染截断路径的长度预算）同菜单11 一样漏计 assistant 的 `reasoning_content`（CoT）；② 两处计数均未计入 assistant 段拼接的 `tool_calls`。本版把两处一起补齐。
+
+- **`_truncate_pairs` 补计 CoT 与 tool_calls**：其 (user, assistant) 对逐轮累加后追加——① 若 `TRAIN_ON_REASONING` 且该轮为 `assistant`，计入 `len(tokenizer.encode(reasoning_content))`；② 若该轮为 `assistant`，计入 `len(tokenizer.encode(_render_tool_calls(tool_calls)))`。与渲染器 `render_messages` 逐字同源（直接复用现成的 `_render_tool_calls`）。
+- **菜单11（`p4_segment_dataset`）补计 tool_calls**：在 9.2.1 已加的 CoT 计数之后追加同一 tool_calls 计数；**不受 `TRAIN_ON_REASONING` 门控**（渲染器里 `tool_calls` 无条件拼入 assistant 段，只有 CoT 受该开关控制）。
+- **变更范围**：ultra3 的 12 个 0012 文件（`210/212/2125/310/312/3125` 的 elite 与 elitelinux）；旗舰版 `d:\旗舰版\3120012elitelinux.py`；release 仓 `v9/` 的 4 个 0012 文件。
+
+### 验证与边界
+- ✅ **语法与格式已校验（实测）**：13 个文件通过 AST 解析；每个文件相对 9.2.1 版均为**纯新增 12 行**（两处各 +8）**、无删除**；BOM 与换行保持不变；0.85B1 源文件未被触碰（hash 不变）。
+- ⚠️ **效果未端到端实测（未验证）**：本版只声称「长度估算的三项（`content` / CoT / `tool_calls`）已与渲染器的训练段口径对齐」，**不声称**已用真实数据回归确认洗选长度；`render_messages` 仍**未改动**。
+- ⚠️ **已知近似（非漏项，未改）**：逐轮分别 `encode` 与渲染时整段拼接，BPE 边界合并可能带来极小的 token 数差异；`system` / `tool` 段的 role 前缀（如 `<|user|>[系统]`、`<|user|>[工具结果…]`）仍按统一 `+2` 近似。
+- ⚠️ **更早系列仍有同类漏算（未修）**：0010 / 0011 及更早文件同样带「长度估算漏计 CoT / tool_calls」的潜伏问题，本次按惯例未改动。
 
 ## 🚀 9.2.1 核心变更
 
@@ -506,7 +521,22 @@ Waver-SNN-SSM/
 | 9.0.2 | 2026-10-13 | 0010 training-observability and engineering fix: new `grad_norm` monitoring (log field `GN:`) + fixed the latent `fallback_factory` arg-name bug + chunked CE for MTP heads (`LOSS_CHUNK_SIZE`) + RMSNorm `weight` moved out of the weight-decay group; no change to the 9.0.1 LR/beta2/clip values |
 | 9.1.0 | 2026-10-13 | 0011 residual LayerScale: changes the residual from an identity add to `γ_i·wave_out + layer_input` with a per-layer learnable scalar γ_i (in no_decay, init 1e-3), structurally damping the 26-layer product of per-layer backward gains; training-forward / prefill / step residual paths all covered, switch on by default, bit-identical to 0010 when off |
 | 9.2.0 | 2026-10-13 | 0012 depth-budget normalization: the residual scale γ_i is upgraded from a per-layer free scalar to a fixed-total-budget share `γ_i = ρ̃_i²/Σ_j ρ̃_j²` (`Σγ≡1` identity, no threshold/clamp/dead-zone), structurally capping the backward depth product at `exp(max_i‖J_i‖)` independent of depth; init ρ̃≡1 ⇒ γ≡1/L; switch on by default, bit-identical to 0010 when off |
-| **9.2.1** | **2026-10-15** | **0012 menu-11 sample-length accounting fix: `p4_segment_dataset` now also counts the assistant turn's `reasoning_content` (CoT) in its per-turn accumulation — previously the omitted CoT made the sample length systematically underestimated (cleaning with a budget x actually yields ≈ x+CoT); only this one length accumulation is changed — no change to architecture / math / training config / renderer** |
+| 9.2.1 | 2026-10-15 | 0012 menu-11 sample-length accounting fix: `p4_segment_dataset` now also counts the assistant turn's `reasoning_content` (CoT) in its per-turn accumulation — previously the omitted CoT made the sample length systematically underestimated (cleaning with a budget x actually yields ≈ x+CoT); only this one length accumulation is changed — no change to architecture / math / training config / renderer |
+| **9.2.2** | **2026-10-15** | **0012 sample-length accounting follow-up: closes two same-class omissions — ① `_truncate_pairs` now counts the assistant's `reasoning_content` (CoT); ② both menu 11 and `_truncate_pairs` now count the `tool_calls` spliced into the assistant span (reusing the existing `_render_tool_calls`, not gated by `TRAIN_ON_REASONING`); only fills in the omitted training-span components of the length estimate — no change to architecture / math / training config / renderer** |
+
+## 🚀 What's New in 9.2.2
+
+> Positioning: a **follow-up sample-length accounting fix for the 0012 family** (**only fills in the omitted training-span components of the length estimate; no change to architecture / math / training config / renderer**). 9.2.1 already counted the menu-11 CoT, but two same-class omissions remained: ① `_truncate_pairs` (the length budget of the training/render truncation path) also omitted the assistant's `reasoning_content` (CoT); ② neither site counted the `tool_calls` spliced into the assistant span. This release closes both.
+
+- **`_truncate_pairs` now counts CoT and tool_calls**: after its per-turn accumulation over each (user, assistant) pair it adds — ① when `TRAIN_ON_REASONING` and the turn is `assistant`, `len(tokenizer.encode(reasoning_content))`; ② when the turn is `assistant`, `len(tokenizer.encode(_render_tool_calls(tool_calls)))`. Word-for-word the same source as the renderer (it reuses the existing `_render_tool_calls`).
+- **Menu 11 (`p4_segment_dataset`) now counts tool_calls**: appended after the CoT block added in 9.2.1; **not gated by `TRAIN_ON_REASONING`** (in the renderer `tool_calls` is spliced into the assistant span unconditionally; only the CoT is gated).
+- **Scope**: the 12 ultra3 0012 files; the flagship `d:\旗舰版\3120012elitelinux.py`; the 4 0012 files under the release repo `v9/`.
+
+### Verification and boundaries
+- ✅ **Syntax and format verified (measured)**: all 13 files parse under AST; each differs from its 9.2.1 version by **pure additions of 12 lines** (8 per site), no deletions; BOM and line endings preserved; the 0.85B1 source is untouched (hash unchanged).
+- ⚠️ **Effect not measured end-to-end (unverified)**: this release only claims that "the three length components (`content` / CoT / `tool_calls`) now match the renderer's training-span basis"; it does **not** claim a regression on real data; `render_messages` is still **unchanged**.
+- ⚠️ **Known approximations (not omissions; unchanged)**: per-turn `encode` vs. the renderer's whole-span concatenation can differ by a tiny number of tokens due to BPE boundary merging; the `system` / `tool` role prefixes (e.g. `<|user|>[系统]`, `<|user|>[工具结果…]`) are still weighted by the uniform `+2` approximation.
+- ⚠️ **Earlier families still carry the same omission (not fixed)**: the 0010 / 0011 and earlier files share the latent "length estimate omits CoT / tool_calls" issue; per the 9.x.y single-family convention it is left unchanged here.
 
 ## 🚀 What's New in 9.2.1
 

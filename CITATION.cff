@@ -5,7 +5,7 @@ authors:
     given-names: "Naiqi"
     orcid: "https://orcid.org/0009-0006-4332-1295"
 title: "Waver-SNN-SSM: From Spiking Neurons to State Space Models"
-version: 9.2.1
+version: 9.2.2
 date-released: 2026-10-15
 identifiers:
   - type: doi

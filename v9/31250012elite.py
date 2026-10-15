@@ -632,6 +632,14 @@ def _truncate_pairs(messages, tokenizer, max_seq_len):
                     ids = tokenizer.encode(c)
                     id_cache[c] = ids
                 pair_tokens += len(ids) + 2
+                if TRAIN_ON_REASONING and turn.get('role') == 'assistant':
+                    rc = turn.get('reasoning_content')
+                    if rc:
+                        pair_tokens += len(tokenizer.encode(str(rc)))
+                if turn.get('role') == 'assistant':
+                    tc = _render_tool_calls(turn.get('tool_calls'))
+                    if tc:
+                        pair_tokens += len(tokenizer.encode(tc))
             kept.insert(0, pair)
             count += pair_tokens
             if count + 2 >= max_seq_len:
@@ -4205,6 +4213,10 @@ def p4_segment_dataset(input_path, output_path, tokenizer, threshold):
                         rc = turn.get('reasoning_content')
                         if rc:
                             pair_tokens += len(tokenizer.encode(str(rc)))
+                    if turn.get('role') == 'assistant':
+                        tc = _render_tool_calls(turn.get('tool_calls'))
+                        if tc:
+                            pair_tokens += len(tokenizer.encode(tc))
                 # 与真实样本长度对齐：input_ids = tokens[:-1]（tokens = [BOS] + 各轮 + [EOS]），
                 # 故真实长度 = Σ(len(ids)+2) + 1。不加这 1 会让边界样本多留一条。
                 pair_tokens += 1

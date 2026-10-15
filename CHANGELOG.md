@@ -6,6 +6,27 @@
 
 ---
 
+## 9.2.2 — 2026-10-15
+
+> 定位：**0012 系列的样本长度统计收尾修复**（**只补全长度估算中遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器**）。9.2.1 已把菜单11 的 CoT 计入，但仍有两处同类漏算：① `_truncate_pairs`（训练 / 渲染截断路径的长度预算）同菜单11 一样漏计 assistant 的 `reasoning_content`（CoT）；② 两处计数均未计入 assistant 段拼接的 `tool_calls`。本版把两处一起补齐。
+
+### 修复
+- **`_truncate_pairs` 补计 CoT 与 tool_calls**：其 (user, assistant) 对逐轮累加后追加——① 若 `TRAIN_ON_REASONING` 且该轮为 `assistant`，计入 `len(tokenizer.encode(reasoning_content))`；② 若该轮为 `assistant`，计入 `len(tokenizer.encode(_render_tool_calls(tool_calls)))`。与渲染器 `render_messages` 逐字同源（直接复用现成的 `_render_tool_calls`）。
+- **菜单11（`p4_segment_dataset`）补计 tool_calls**：在 9.2.1 已加的 CoT 计数之后追加同一 tool_calls 计数；**不受 `TRAIN_ON_REASONING` 门控**（渲染器里 `tool_calls` 是**无条件**拼入 assistant 段的，只有 CoT 受该开关控制）。
+
+### 变更范围
+- ultra3：12 个 0012 文件（`210/212/2125/310/312/3125` 的 elite 与 elitelinux）。
+- 旗舰版：`d:\旗舰版\3120012elitelinux.py`（同一副本继续叠加修复；参数仍与 0.85B1 对齐）。
+- release 仓：`v9/` 的 4 个 0012 文件。
+
+### 边界与注意
+- ✅ **语法与格式已校验（实测）**：13 个文件通过 AST 解析；每个文件相对 9.2.1 版均为**纯新增 12 行**（菜单11 与 `_truncate_pairs` 两处各 +8）**、无删除**；BOM 与换行保持不变；0.85B1 源文件未被触碰（hash 不变）。
+- ⚠️ **效果未端到端实测（未验证）**：本版只声称「长度估算的三项（`content` / CoT / `tool_calls`）已与渲染器的训练段口径对齐」，**不声称**已用真实数据回归确认洗选长度；`render_messages` 仍**未改动**，不改变任何已渲染样本内容。
+- ⚠️ **已知近似（非漏项，未改）**：逐轮分别 `encode` 与渲染时整段拼接，BPE 边界合并可能带来极小的 token 数差异；`system` / `tool` 段的 role 前缀（如 `<|user|>[系统]`、`<|user|>[工具结果…]`）仍按统一 `+2` 近似计权。
+- ⚠️ **更早系列仍有同类漏算（未修）**：0010 / 0011 及更早文件同样带「长度估算漏计 CoT / tool_calls」的潜伏问题，本次按 9.x.y 单系列惯例**未改动**。
+
+---
+
 ## 9.2.1 — 2026-10-15
 
 > 定位：**0012 系列的菜单11 样本长度统计修复**（**只改「受 token 预算约束的分段数据洗选」这一处的长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器**）。菜单11（`p4_segment_dataset`）在估算每条候选样本长度时，逐轮只累加了 `content` 的 token 数与 role/end 开销，**漏计了 assistant 轮的 `reasoning_content`（CoT）**；而训练渲染器 `render_messages` 在 `TRAIN_ON_REASONING=True` 时会把 CoT 拼进训练段 ⇒ 样本长度被**系统性低估**，按预算 x 洗选实际会落出约 x+CoT 的长度。本版补齐该项。
