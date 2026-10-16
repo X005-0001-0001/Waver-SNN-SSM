@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.2.2`（2026-10-15）** —— **0012 系列：样本长度统计收尾修复**。在 9.2.1 计入菜单11 CoT 的基础上，再补齐两处同类漏算：① `_truncate_pairs`（训练/渲染截断路径）同菜单11 一样漏计 assistant 的 `reasoning_content`（CoT）；② 两处计数均未计入 assistant 段拼接的 `tool_calls`。**只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器。**
+> **当前最新 / Latest：`9.2.3`（2026-10-16）** —— **0012 系列：闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复**。`_closed_form_expm_2x2` 原先把 `e^μ`（δ 大时 `Re(μ)=−δν<0` ⇒ **下溢为 0**）与 `cosh(√s²)`（δ 大时 **上溢为 inf**）**拆开相乘** ⇒ `0 × inf = NaN`；本版改为**按特征值直接指数化** `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），数学恒等、无阈值、无回退分支。**只改该函数的数值实现，不改模型结构 / 数学语义 / 训练配置。**
 
-> 上一版 / Previous：`9.2.1`（2026-10-15）—— **0012 系列：菜单11 样本长度统计修复**：菜单11（`p4_segment_dataset`）逐轮累加补计 assistant 的 `reasoning_content`（CoT），原漏计 CoT 导致样本长度被系统性低估（按预算 x 洗选实际落出约 x+CoT）；只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器。
+> 上一版 / Previous：`9.2.2`（2026-10-15）—— **0012 系列：样本长度统计收尾修复**：补齐两处同类漏算 —— ① `_truncate_pairs` 补计 assistant 的 `reasoning_content`（CoT）；② 菜单11 与 `_truncate_pairs` 两处均补计 assistant 段拼接的 `tool_calls`；只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器。
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -100,7 +100,24 @@ Waver-SNN-SSM/
 | 9.1.0 | 2026-10-13 | 0011 残差 LayerScale：把「残差 = 恒等加法」改为「残差 = `γ_i·wave_out + layer_input`」，每层一个可学习标量 γ_i（进 no_decay，初值 1e-3），结构性压低「深度连乘」早期各层反向增益的 26 层连乘；训练 forward / prefill / step 三处残差路径统一覆盖，开关默认开启，关闭时与 0010 逐位一致 |
 | 9.2.0 | 2026-10-13 | 0012 深度预算归一化：残差缩放 γ_i 由「各层自由标量」升级为「总预算恒定的份额」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，无阈值/钳位/死区），把反向深度连乘结构性封顶于 `exp(max_i‖J_i‖)`、上界与层数无关；初值 ρ̃ 全 1 ⇒ γ≡1/L；开关默认开启，关闭时与 0010 逐位一致 |
 | 9.2.1 | 2026-10-15 | 0012 菜单11 样本长度统计修复：`p4_segment_dataset` 逐轮累加补计 assistant 的 `reasoning_content`（CoT）—— 原漏计 CoT 导致样本长度被系统性低估（按预算 x 洗选实际落出约 x+CoT）；只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器 |
-| **9.2.2** | **2026-10-15** | **0012 样本长度统计收尾修复：补齐两处同类漏算——① `_truncate_pairs` 补计 assistant 的 `reasoning_content`（CoT）；② 菜单11 与 `_truncate_pairs` 两处均补计 assistant 段拼接的 `tool_calls`（复用现成 `_render_tool_calls`、不受 `TRAIN_ON_REASONING` 门控）；只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器** |
+| 9.2.2 | 2026-10-15 | 0012 样本长度统计收尾修复：补齐两处同类漏算——① `_truncate_pairs` 补计 assistant 的 `reasoning_content`（CoT）；② 菜单11 与 `_truncate_pairs` 两处均补计 assistant 段拼接的 `tool_calls`（复用现成 `_render_tool_calls`、不受 `TRAIN_ON_REASONING` 门控）；只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器 |
+| **9.2.3** | **2026-10-16** | **0012 闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复：原实现把 `e^μ`（δ 大时下溢为 0）与 `cosh(√s²)`（δ 大时上溢为 inf）拆开相乘 ⇒ `0 × inf = NaN`；改为按特征值直接指数化 `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），`f=(e^{λ+}−e^{λ-})/(2√s²)`、`g=(e^{λ+}+e^{λ-})/2`，数学恒等；`CF_EXPM_MIN_ABS_S2` 1e-6→1.0（级数/闭式的数学交接点）；只改 `_closed_form_expm_2x2` 的数值实现，不改模型结构 / 数学语义 / 训练配置** |
+
+## 🚀 9.2.3 核心变更
+
+> 定位：**0012 系列 —— 修复闭式 2×2 矩阵指数在 fp32 下的溢出 / NaN 缺陷**（**只改 `_closed_form_expm_2x2` 的数值实现，不改模型结构 / 数学语义 / 训练配置**）。这是 0.85B 训练失稳 NaN 的**确定性根因**：原实现把 `e^μ` 与 `cosh(√s²)` **拆开算再相乘** —— δ 大时 `Re(μ) = −δ(ν₀+ν₁)/2` 使 `e^μ` **下溢为 0**，而 `Re(√s²) ≈ +δ|ν₀−ν₁|/2` 使 `cosh(√s²)` **上溢为 inf**，`0 × inf = NaN`（fp64 全程正常）。
+
+- **按特征值直接指数化**：不再单独计算 `e^μ` 与 `sinh/cosh`，改用 `λ± = μ ± √s²`、`e^{λ±} = exp(μ ± √s²)`，再合并回原式 —— `f = e^μ·sinh(√s²)/√s² = (e^{λ+}−e^{λ-})/(2√s²)`、`g = e^μ·cosh(√s²) = (e^{λ+}+e^{λ-})/2`。数学与原式**恒等**，只换浮点运算次序。
+- **为何恒有限（结构性，非经验）**：本模型 Ω 的 Hermitian 部分 = `−diag(ν)`（`iθ` 项与斜埃尔米特耦合 `M` 相消），故 `Re(λ±) = Re(μ) = −δν < 0` ⇒ **`|e^{λ±}| < 1` 对任意 δ>0 恒成立**，两项永不溢出、永不下溢。原实现的缺陷正是「把一个下溢因子与一个上溢因子相乘」。
+- **`CF_EXPM_MIN_ABS_S2`：`1e-6` → `1.0`**：改用特征值形式后，闭式在 `|s²|→0` 仍有 `~eps/(2√s²)` 的相消误差；6 项级数在 `|s²|<1` 的截断误差 `<2e-9`，严格更优。新阈值即「级数 / 闭式」的数学交接点，不是经验值。
+- **变更范围**：ultra3 的 **8 个**含该闭式路径的 0012 文件（`210/212/310/312` 的 elite 与 elitelinux；`2125/3125` 的 4 个 x25 文件走块对角闭式、无此缺陷故未改）；旗舰版 `d:\旗舰版\0.85B1\3120012elitelinux.py` 就地修补；测试区 `d:\测试区\3120012elite.py` 就地修补；release 仓 `v9/` 的 2 个 3120012 文件。
+
+### 验证与边界
+- ✅ **语法与格式已校验（实测）**：10 个文件均通过 AST 解析；BOM 与换行逐字节保持原状（`2120012elite` / `0.85B1` / `测试区` 为无 BOM + LF，其余 7 个为 BOM + LF）。
+- ✅ **数值已实测（前向 + 反向）**：取训练日志中最坏通道（`ν=(3.72, 0.027)`、`θ=(1.49, 0.014)`、耦合 `0.098`），扫 `δ = 45 / 50 / 68 / 200 / 1000` —— 新实现 fp32 前向**全部有限**（旧实现在 `δ≥50` 即全 NaN、且无 inf），反向梯度到 `δ=1000` 全部有限（旧实现 `δ≥50` 梯度全 NaN）；与 fp64 `matrix_exp` 参考的相对误差 `≤1.8e-5`（为 fp32 输入量化与指数参数舍入固有）。
+- ✅ **可推导**：`|e^{λ±}|<1` 恒成立由 `Re(Ω) = −diag(ν)` 直接推出（Bendixson）；与训练日志「Loss 有限 / GN=nan」的签名一致。
+- ⚠️ **未端到端实测**：本版**只声称**消除了该数值缺陷（fp32 不再 NaN / inf）；**不声称**已重跑 0012 训练确认 NaN 消失或 PPL 改善。
+- ⚠️ **更早系列同缺陷（只报不改）**：`007 / 008 / 009 / 010 / 011` 及更早文件同样含「`e^μ` 与 `cosh` 拆开相乘」的同类隐患，本次按 9.x.y 单系列惯例未改动。
 
 ## 🚀 9.2.2 核心变更
 
@@ -522,7 +539,24 @@ Waver-SNN-SSM/
 | 9.1.0 | 2026-10-13 | 0011 residual LayerScale: changes the residual from an identity add to `γ_i·wave_out + layer_input` with a per-layer learnable scalar γ_i (in no_decay, init 1e-3), structurally damping the 26-layer product of per-layer backward gains; training-forward / prefill / step residual paths all covered, switch on by default, bit-identical to 0010 when off |
 | 9.2.0 | 2026-10-13 | 0012 depth-budget normalization: the residual scale γ_i is upgraded from a per-layer free scalar to a fixed-total-budget share `γ_i = ρ̃_i²/Σ_j ρ̃_j²` (`Σγ≡1` identity, no threshold/clamp/dead-zone), structurally capping the backward depth product at `exp(max_i‖J_i‖)` independent of depth; init ρ̃≡1 ⇒ γ≡1/L; switch on by default, bit-identical to 0010 when off |
 | 9.2.1 | 2026-10-15 | 0012 menu-11 sample-length accounting fix: `p4_segment_dataset` now also counts the assistant turn's `reasoning_content` (CoT) in its per-turn accumulation — previously the omitted CoT made the sample length systematically underestimated (cleaning with a budget x actually yields ≈ x+CoT); only this one length accumulation is changed — no change to architecture / math / training config / renderer |
-| **9.2.2** | **2026-10-15** | **0012 sample-length accounting follow-up: closes two same-class omissions — ① `_truncate_pairs` now counts the assistant's `reasoning_content` (CoT); ② both menu 11 and `_truncate_pairs` now count the `tool_calls` spliced into the assistant span (reusing the existing `_render_tool_calls`, not gated by `TRAIN_ON_REASONING`); only fills in the omitted training-span components of the length estimate — no change to architecture / math / training config / renderer** |
+| 9.2.2 | 2026-10-15 | 0012 sample-length accounting follow-up: closes two same-class omissions — ① `_truncate_pairs` now counts the assistant's `reasoning_content` (CoT); ② both menu 11 and `_truncate_pairs` now count the `tool_calls` spliced into the assistant span (reusing the existing `_render_tool_calls`, not gated by `TRAIN_ON_REASONING`); only fills in the omitted training-span components of the length estimate — no change to architecture / math / training config / renderer |
+| **9.2.3** | **2026-10-16** | **0012 closed-form 2×2 matrix-exponential fp32 overflow / NaN fix: the old implementation multiplied `e^μ` (underflows to 0 for large δ) by `cosh(√s²)` (overflows to inf for large δ) ⇒ `0 × inf = NaN`; now exponentiated directly by eigenvalue `e^{λ±}=e^{μ±√s²}` (`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` always finite), `f=(e^{λ+}−e^{λ-})/(2√s²)`, `g=(e^{λ+}+e^{λ-})/2`, mathematically identical; `CF_EXPM_MIN_ABS_S2` 1e-6→1.0 (the analytic series/closed-form handoff); only the numeric implementation of `_closed_form_expm_2x2` is changed — no change to architecture / math semantics / training config** |
+
+## 🚀 What's New in 9.2.3
+
+> Positioning: a **fix for the fp32 overflow / NaN defect in the closed-form 2×2 matrix exponential of the 0012 family** (**only the numeric implementation of `_closed_form_expm_2x2` is changed; no change to architecture / math semantics / training config**). This is the **deterministic root cause** of the 0.85B training-instability NaN: the old implementation computed `e^μ` and `cosh(√s²)` **separately and then multiplied them** — for large δ, `Re(μ) = −δ(ν₀+ν₁)/2` makes `e^μ` **underflow to 0**, while `Re(√s²) ≈ +δ|ν₀−ν₁|/2` makes `cosh(√s²)` **overflow to inf**, so `0 × inf = NaN` (fp64 is fine throughout).
+
+- **Exponentiate directly by eigenvalue**: instead of computing `e^μ` and `sinh/cosh` separately, use `λ± = μ ± √s²`, `e^{λ±} = exp(μ ± √s²)`, then merge back into the original form — `f = e^μ·sinh(√s²)/√s² = (e^{λ+}−e^{λ-})/(2√s²)`, `g = e^μ·cosh(√s²) = (e^{λ+}+e^{λ-})/2`. Mathematically **identical** to the original; only the floating-point operation order changes.
+- **Why it is always finite (structural, not empirical)**: the Hermitian part of Ω in this model is `−diag(ν)` (the `iθ` term cancels against the skew-Hermitian coupling `M`), so `Re(λ±) = Re(μ) = −δν < 0` ⇒ **`|e^{λ±}| < 1` holds for any δ>0**, and neither term ever overflows or underflows. The defect of the old implementation was exactly "multiplying an underflowing factor by an overflowing factor".
+- **`CF_EXPM_MIN_ABS_S2`: `1e-6` → `1.0`**: after switching to the eigenvalue form, the closed form still has a `~eps/(2√s²)` cancellation error as `|s²|→0`; the 6-term series has a truncation error `<2e-9` for `|s²|<1`, strictly better. The new threshold is the analytic **series/closed-form handoff**, not an empirical value.
+- **Scope**: the **8** ultra3 0012 files carrying this closed-form path (`210/212/310/312` elite and elitelinux; the 4 x25 files of `2125/3125` use the block-diagonal closed form and are unaffected, so they are unchanged); the flagship `d:\旗舰版\0.85B1\3120012elitelinux.py` patched in place; the test area `d:\测试区\3120012elite.py` patched in place; the 2 3120012 files under the release repo `v9/`.
+
+### Verification and boundaries
+- ✅ **Syntax and format verified (measured)**: all 10 files parse under AST; BOM and line endings are preserved byte-for-byte (`2120012elite` / `0.85B1` / `测试区` are no-BOM + LF, the other 7 are BOM + LF).
+- ✅ **Numerics measured (forward + backward)**: taking the worst channel from the training logs (`ν=(3.72, 0.027)`, `θ=(1.49, 0.014)`, coupling `0.098`) and sweeping `δ = 45 / 50 / 68 / 200 / 1000` — the new implementation's fp32 forward is **finite throughout** (the old implementation is all-NaN at `δ≥50`, with no inf), and its gradients stay finite up to `δ=1000` (the old implementation's gradients are all-NaN at `δ≥50`); the relative error versus the fp64 `matrix_exp` reference is `≤1.8e-5` (inherent to fp32 input quantization and exponent-argument rounding).
+- ✅ **Derivable**: `|e^{λ±}|<1` follows directly from `Re(Ω) = −diag(ν)` (Bendixson); consistent with the training-log signature "finite Loss / GN=nan".
+- ⚠️ **Not measured end-to-end**: this release **only claims** that the numeric defect is removed (fp32 no longer NaN / inf); it does **not** claim that 0012 training was re-run to confirm the NaN is gone or that PPL improved.
+- ⚠️ **Earlier families share the defect (reported, not fixed)**: the `007 / 008 / 009 / 010 / 011` and earlier files likewise carry the same "multiply separated `e^μ` and `cosh`" hazard; per the 9.x.y single-family convention it is left unchanged here.
 
 ## 🚀 What's New in 9.2.2
 

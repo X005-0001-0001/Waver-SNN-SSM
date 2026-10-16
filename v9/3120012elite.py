@@ -111,7 +111,8 @@ NUM_WORKERS = 0                    # DataLoader 进程数；0=主进程(Windows 
 #   两条路径数学恒等，仅浮点运算次序不同（fp64 全局相对差 ~1e-15）。
 USE_CLOSED_FORM_EXPM = True
 # CF_EXPM_MIN_ABS_S2: |s²| 小于此值时，sinh(√s²)/√s² 与 cosh(√s²) 改用级数展开（避免 0/0 与相消误差）。
-CF_EXPM_MIN_ABS_S2 = 1e-6
+# 取 1.0：6 项级数在 |s²|<1 的截断误差 <2e-9；而闭式 (e^{λ+}-e^{λ-})/(2√s²) 在 |s²|→0 有 ~eps/(2√s²) 相消误差。
+CF_EXPM_MIN_ABS_S2 = 1.0
 # CF_EXPM_SERIES_TERMS: 级数保留项数（n=0..TERMS-1）。
 CF_EXPM_SERIES_TERMS = 6
 # USE_CAPTURABLE_EXPM: True 时，K≠2 的 exp(δ·Ω_t) 走「缩放-平方 + Taylor 级数」（纯 matmul/逐元素，无 LAPACK）
@@ -1099,6 +1100,11 @@ def _closed_form_expm_2x2(W):
         mu = tr(W_c)/2，B = W_c - mu*I（tr(B)=0）
         s2 = B11^2 + B12*B21 = -det(B)        （用 s2 形式，不显式开方）
         exp(W_c) = e^mu * [cosh(sqrt(s2))*I + (sinh(sqrt(s2))/sqrt(s2))*B]
+    数值实现：不拆分 e^mu 与 cosh/sinh，直接按特征值指数化 e^{λ±}=e^{mu±sqrt(s2)}，再合并为
+        f = e^mu*sinh(sqrt(s2))/sqrt(s2) = (e^{λ+}-e^{λ-})/(2*sqrt(s2))
+        g = e^mu*cosh(sqrt(s2))          = (e^{λ+}+e^{λ-})/2
+    本模型 Re(λ±)=Re(mu)=-δν<0 ⇒ |e^{λ±}|<1 恒有限，彻底消除原实现
+    「exp(mu) 下溢为 0 × cosh 上溢为 inf = NaN」的缺陷。
     |s2| < CF_EXPM_MIN_ABS_S2 时 f/g 走级数（避免 0/0 与相消）：
         sinh(sqrt(s2))/sqrt(s2) = sum_{n>=0} s2^n/(2n+1)!
         cosh(sqrt(s2))          = sum_{n>=0} s2^n/(2n)!
@@ -1119,8 +1125,12 @@ def _closed_form_expm_2x2(W):
     _tiny = s2.abs() < CF_EXPM_MIN_ABS_S2
     _s2_safe = torch.where(_tiny, torch.ones_like(s2), s2)
     _sq = torch.sqrt(_s2_safe)
-    f_closed = torch.sinh(_sq) / _sq
-    g_closed = torch.cosh(_sq)
+    # 按特征值指数化：e^{mu±sqrt(s2)} 恒有限，避免 exp(mu)*cosh 的 0*inf。
+    _emu = torch.exp(mu)
+    _ep = torch.exp(mu + _sq)
+    _em = torch.exp(mu - _sq)
+    f_closed = (_ep - _em) / (2.0 * _sq)
+    g_closed = (_ep + _em) * 0.5
 
     f_series = torch.ones_like(s2)
     g_series = torch.ones_like(s2)
@@ -1134,12 +1144,11 @@ def _closed_form_expm_2x2(W):
         f_series = f_series + _pow / _fd
         g_series = g_series + _pow / _gd
 
-    f = torch.where(_tiny, f_series, f_closed)
-    g = torch.where(_tiny, g_series, g_closed)
+    f = torch.where(_tiny, f_series * _emu, f_closed)
+    g = torch.where(_tiny, g_series * _emu, g_closed)
 
     _I2 = torch.eye(2, dtype=Wc.dtype, device=Wc.device)
-    _core = g.unsqueeze(-1).unsqueeze(-1) * _I2 + f.unsqueeze(-1).unsqueeze(-1) * B
-    _out = torch.exp(mu).unsqueeze(-1).unsqueeze(-1) * _core
+    _out = g.unsqueeze(-1).unsqueeze(-1) * _I2 + f.unsqueeze(-1).unsqueeze(-1) * B
 
     P = _out.real
     Q = _out.imag
