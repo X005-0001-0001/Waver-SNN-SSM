@@ -10,7 +10,7 @@ date-released: 2026-10-16
 identifiers:
   - type: doi
     value: "10.5281/zenodo.22309186"
-license: "GPL-3.0"
+license: "AGPL-3.0"
 repository-code: "https://github.com/X005-0001-0001/waver-snn-ssm"
 keywords:
   - state-space-models

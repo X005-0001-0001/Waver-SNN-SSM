@@ -2,7 +2,7 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22309186.svg)](https://doi.org/10.5281/zenodo.22309186)
 [![ORCID](https://img.shields.io/badge/ORCID-0009--0006--4332--1295-green)](https://orcid.org/0009-0006-4332-1295)
-[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 
@@ -448,7 +448,7 @@ python v8/312009elite.py
 - Email: X005_0001_0001@163.com
 
 ## 📄 许可证 / License
-本项目采用 **GNU General Public License v3.0**。任何使用、修改或分发本代码的行为，都必须遵守 GPL-3.0 的条款，即任何衍生作品也必须以 GPL-3.0 开源。
+本项目采用 **GNU Affero General Public License v3.0（AGPL-3.0）**。任何使用、修改或分发本代码的行为，都必须遵守 AGPL-3.0 的条款，即任何衍生作品也必须以 AGPL-3.0 开源。与 GPL-3.0 的唯一实质差别是**第 13 条**：**若修改后的版本通过网络向用户提供服务（例如部署为在线服务），必须向这些用户提供对应源码**（GPL 不约束网络使用）。
 
 ## ⚠️ 版权声明 / Copyright
 Copyright © 2026 Naiqi Zeng. All rights reserved.
@@ -885,11 +885,11 @@ All key parameters (model architecture, optimizer, data paths, MoE, memory optim
 - Email: X005_0001_0001@163.com
 
 ## 📄 License
-This project is licensed under the **GNU General Public License v3.0**. Any use, modification or distribution of this code must comply with GPL-3.0, i.e. any derivative work must also be open-sourced under GPL-3.0.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. Any use, modification or distribution of this code must comply with AGPL-3.0, i.e. any derivative work must also be open-sourced under AGPL-3.0. The only substantive difference from GPL-3.0 is **section 13**: **if you make the modified version available to users over a network (e.g. deploy it as an online service), you must offer those users the Corresponding Source** (the GPL imposes no such network condition).
 
 ## ⚠️ Copyright
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.1.0
-Last Updated: 2026-10-13
+Version: 9.2.3
+Last Updated: 2026-10-16
