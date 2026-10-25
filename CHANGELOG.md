@@ -6,6 +6,30 @@
 
 ---
 
+## 9.3.0 — 2026-10-21
+
+> 定位：**0012 训练步 CUDA Graph 从「仅 batch=1」扩展为「任意 batch」+ 修复 torch ≥ 2.13 的 stale capture stream 校验**（**只改 `TrainStepGraphRunner` 的缓冲、缓存与捕获流，不改模型结构 / 数学语义 / 训练配置**）。
+
+### 新增与修复
+- **batch>1**：缓存 key 由 `bT` 改为 `(B, bT)`，`ids / labels / attn` 缓冲按 `(B, bT)` 分配；整批 pad 到同一桶长（`TRAIN_GRAPH_BUCKET`），pad 行 `label=-100` 且 `attn=0`，不参与 loss、不越过注意力 mask。数学上与逐 batch 的 eager 路径等价，仅尾部 padding。
+- **stale capture stream**：改为 `torch.cuda.graph(g, stream=side)`，捕获流与预热流统一。torch ≥ 2.13 会逐个校验 autograd 节点记录的 stream；原实现「旁路预热 + 默认捕获流」会被判为 stale 而中止 —— 且 `current_stream().wait_stream(side)` 并不能把 `side` 并入 `torch.cuda.graph` 自建的捕获流。本版不引入全局 override 标志、不做版本分支。
+- **显存护栏**：新增 `TRAIN_GRAPH_MAX_TOKENS = 32768`，按所有已缓存图的 `Σ B×bT` 计算；超出先按 LRU 淘汰再捕获，仍放不下则回退 eager。这是资源护栏，不改变任何数学语义（不是动力学阈值）。
+- **先淘汰、再捕获**：避免「新图已分配 + 旧图未释放」的显存峰值叠加；缓存项保留 `stream` 引用，防止流被 GC 后连带销毁图的私有内存池。
+- **MoE 明确不抓图**：`MoEFFN.forward` 用 `hit.nonzero()` 得到变长 token 索引，并有 `bool(hit.any())` 主机同步，形状随数据变化；稠密全专家是 `E/top_k` 倍计算，固定容量派发则丢弃超容量 token。两条路线都有明确代价，故 MoE 下保持回退 eager，并在文件头注释写明原因。
+
+### 变更范围
+- ultra3：**12 个** 0012 文件（`210 / 212 / 2125 / 310 / 312 / 3125` 的 elite 与 elitelinux）。
+- 旗舰版：`d:\旗舰版\3120012elitelinux.py`（顶层单文件就地修改；子目录未动）。
+- release 仓：`v9/` 的 4 个 312 文件（`3120012elite.py`、`3120012elitelinux.py`、`31250012elite.py`、`31250012elitelinux.py`）。
+
+### 边界与注意
+- ✅ **静态校验（实测）**：13 个文件 `ast.parse` 全通过；BOM 与换行逐字节保持（11 个 1×BOM + LF；`2120012elite` 与旗舰版无 BOM + LF）；替换后的公共块 sha256 在 13 份中一致（`efb6c8ff9ec21cf8`）。
+- ⚠️ **未端到端实测（未验证）**：发布时 GPU 被训练任务占用（15.0 / 16.3 GB），未跑真实抓图；不声称 batch>1 图已在 GPU 上跑通，也不声称相对 eager 的加速比。
+- ⚠️ **已知取舍**：`TRAIN_GRAPH_MAX_TOKENS` 会让超大 batch 用不上图（预期行为）；padding 行会稀释日志里的 `activity` 均值（仅日志，不影响 loss / 梯度）。
+- ⚠️ **MoE 仍未覆盖**：`MOE_ENABLED=True` 时训练步图与解码图都回退 eager。
+
+---
+
 ## 9.2.3 — 2026-10-16
 
 > 定位：**0012 系列 —— 修复闭式 2×2 矩阵指数在 fp32 下的溢出 / NaN 缺陷**（**只改 `_closed_form_expm_2x2` 的数值实现，不改模型结构 / 数学语义 / 训练配置**）。这是 0.85B 训练失稳 NaN 的**确定性根因**：原实现把 `e^μ` 与 `cosh(√s²)` **拆开算再相乘** —— δ 大时 `Re(μ) = −δ(ν₀+ν₁)/2` 使 `e^μ` **下溢为 0**，而 `Re(√s²) ≈ +δ|ν₀−ν₁|/2` 使 `cosh(√s²)` **上溢为 inf**，`0 × inf = NaN`（fp64 全程正常）。

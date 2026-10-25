@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.2.3`（2026-10-16）** —— **0012 系列：闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复**。`_closed_form_expm_2x2` 原先把 `e^μ`（δ 大时 `Re(μ)=−δν<0` ⇒ **下溢为 0**）与 `cosh(√s²)`（δ 大时 **上溢为 inf**）**拆开相乘** ⇒ `0 × inf = NaN`；本版改为**按特征值直接指数化** `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），数学恒等、无阈值、无回退分支。**只改该函数的数值实现，不改模型结构 / 数学语义 / 训练配置。**
+> **当前最新 / Latest：`9.3.0`（2026-10-21）** —— **0012 训练步 CUDA Graph：支持 batch>1 + 修复 stale capture stream**。缓存 key 由 `bT` 改为 `(B, bT)`、缓冲按 `(B, bT)` 分配，整批 pad 到同一桶长（pad 行 `label=-100` / `attn=0`，不参与 loss、不越过 mask）；`torch.cuda.graph(g, stream=side)` 让捕获流与预热流一致，结构性消除 torch ≥ 2.13 的 stale capture stream 中止；新增 `TRAIN_GRAPH_MAX_TOKENS=32768` 显存护栏与「先淘汰、再捕获」；MoE 因动态 `nonzero` 变长明确不抓图。**不改模型结构 / 数学语义 / 训练配置。**
 
-> 上一版 / Previous：`9.2.2`（2026-10-15）—— **0012 系列：样本长度统计收尾修复**：补齐两处同类漏算 —— ① `_truncate_pairs` 补计 assistant 的 `reasoning_content`（CoT）；② 菜单11 与 `_truncate_pairs` 两处均补计 assistant 段拼接的 `tool_calls`；只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器。
+> 上一版 / Previous：`9.2.3`（2026-10-16）—— **0012 系列：闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复**。`_closed_form_expm_2x2` 原先把 `e^μ`（δ 大时 `Re(μ)=−δν<0` ⇒ **下溢为 0**）与 `cosh(√s²)`（δ 大时 **上溢为 inf**）**拆开相乘** ⇒ `0 × inf = NaN`；本版改为**按特征值直接指数化** `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），数学恒等、无阈值、无回退分支。**只改该函数的数值实现，不改模型结构 / 数学语义 / 训练配置。**
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -101,7 +101,19 @@ Waver-SNN-SSM/
 | 9.2.0 | 2026-10-13 | 0012 深度预算归一化：残差缩放 γ_i 由「各层自由标量」升级为「总预算恒定的份额」`γ_i = ρ̃_i²/Σ_j ρ̃_j²`（`Σγ≡1` 恒等式，无阈值/钳位/死区），把反向深度连乘结构性封顶于 `exp(max_i‖J_i‖)`、上界与层数无关；初值 ρ̃ 全 1 ⇒ γ≡1/L；开关默认开启，关闭时与 0010 逐位一致 |
 | 9.2.1 | 2026-10-15 | 0012 菜单11 样本长度统计修复：`p4_segment_dataset` 逐轮累加补计 assistant 的 `reasoning_content`（CoT）—— 原漏计 CoT 导致样本长度被系统性低估（按预算 x 洗选实际落出约 x+CoT）；只改这一处长度累加，不改模型结构 / 数学路径 / 训练配置 / 渲染器 |
 | 9.2.2 | 2026-10-15 | 0012 样本长度统计收尾修复：补齐两处同类漏算——① `_truncate_pairs` 补计 assistant 的 `reasoning_content`（CoT）；② 菜单11 与 `_truncate_pairs` 两处均补计 assistant 段拼接的 `tool_calls`（复用现成 `_render_tool_calls`、不受 `TRAIN_ON_REASONING` 门控）；只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器 |
-| **9.2.3** | **2026-10-16** | **0012 闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复：原实现把 `e^μ`（δ 大时下溢为 0）与 `cosh(√s²)`（δ 大时上溢为 inf）拆开相乘 ⇒ `0 × inf = NaN`；改为按特征值直接指数化 `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），`f=(e^{λ+}−e^{λ-})/(2√s²)`、`g=(e^{λ+}+e^{λ-})/2`，数学恒等；`CF_EXPM_MIN_ABS_S2` 1e-6→1.0（级数/闭式的数学交接点）；只改 `_closed_form_expm_2x2` 的数值实现，不改模型结构 / 数学语义 / 训练配置** |
+| 9.2.3 | 2026-10-16 | 0012 闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复：原实现把 `e^μ`（δ 大时下溢为 0）与 `cosh(√s²)`（δ 大时上溢为 inf）拆开相乘 ⇒ `0 × inf = NaN`；改为按特征值直接指数化 `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），`f=(e^{λ+}−e^{λ-})/(2√s²)`、`g=(e^{λ+}+e^{λ-})/2`，数学恒等；`CF_EXPM_MIN_ABS_S2` 1e-6→1.0（级数/闭式的数学交接点）；只改 `_closed_form_expm_2x2` 的数值实现，不改模型结构 / 数学语义 / 训练配置 |
+| **9.3.0** | **2026-10-21** | **0012 训练步 CUDA Graph 支持 batch>1 + stale capture stream 修复：缓存 key 改为 `(B, bT)`、缓冲按 `(B, bT)` 分配，整批 pad 到同一桶长（pad 行 `label=-100` / `attn=0`，不参与 loss、不越过 mask）；`torch.cuda.graph(g, stream=side)` 让捕获流=预热流，结构性消除 torch ≥ 2.13 的 stale capture stream 中止；新增 `TRAIN_GRAPH_MAX_TOKENS=32768` 显存护栏与「先淘汰、再捕获」；MoE 因动态 `nonzero` 变长明确不抓图；不改模型结构 / 数学语义 / 训练配置** |
+
+## 🚀 9.3.0 核心变更
+
+> 定位：**训练步 CUDA Graph 从「仅 batch=1」扩展为「任意 batch」+ 修复 torch ≥ 2.13 的 stale capture stream 校验**（**只改 `TrainStepGraphRunner` 的缓冲、缓存与捕获流，不改模型结构 / 数学语义 / 训练配置**）。
+
+- **batch>1 支持**：缓存 key 由 `bT` 改为 `(B, bT)`，输入 / 标签 / 掩码缓冲按 `(B, bT)` 分配；整批 pad 到同一桶长，pad 行 `label=-100` 且 `attn=0`，不参与 loss、不越过注意力 mask。数学上与逐 batch 的 eager 路径等价（仅尾部 padding）。
+- **捕获流 = 预热流**：`torch.cuda.graph(g, stream=side)` 让捕获流与预热流一致。torch ≥ 2.13 会逐个校验 autograd 节点记录的 stream，原实现「旁路预热 + 默认捕获流」会被判为 stale capture stream 而中止；本版从结构上消除该问题（不引入全局 override 标志，也不做版本分支）。
+- **显存护栏**：新增 `TRAIN_GRAPH_MAX_TOKENS = 32768`，按所有已缓存图的 `Σ B×bT` 计算；超出先按 LRU 淘汰再捕获，仍放不下则回退 eager。这是资源护栏，不改变任何数学语义（不是动力学阈值）。
+- **先淘汰、再捕获**：避免「新图已分配 + 旧图未释放」的显存峰值叠加；缓存项保留 `stream` 引用，防止流被 GC 后连带销毁图的私有内存池。
+- **MoE 明确不抓图**：`MoEFFN.forward` 用 `hit.nonzero()` 得到变长 token 索引，并有 `bool(hit.any())` 主机同步，形状随数据变化，而 CUDA Graph 要求静态形状；稠密全专家是 `E/top_k` 倍计算，固定容量派发则丢弃超容量 token。两条路线都有明确代价，故 MoE 下保持回退 eager。
+- **验证边界**：13 个文件通过 AST、BOM / 换行逐字节保持、公共块 sha256 一致；**未做 GPU 端到端实测**（发布时 GPU 被训练任务占用），不声称已跑通真实抓图。
 
 ## 🚀 9.2.3 核心变更
 
@@ -540,7 +552,19 @@ Waver-SNN-SSM/
 | 9.2.0 | 2026-10-13 | 0012 depth-budget normalization: the residual scale γ_i is upgraded from a per-layer free scalar to a fixed-total-budget share `γ_i = ρ̃_i²/Σ_j ρ̃_j²` (`Σγ≡1` identity, no threshold/clamp/dead-zone), structurally capping the backward depth product at `exp(max_i‖J_i‖)` independent of depth; init ρ̃≡1 ⇒ γ≡1/L; switch on by default, bit-identical to 0010 when off |
 | 9.2.1 | 2026-10-15 | 0012 menu-11 sample-length accounting fix: `p4_segment_dataset` now also counts the assistant turn's `reasoning_content` (CoT) in its per-turn accumulation — previously the omitted CoT made the sample length systematically underestimated (cleaning with a budget x actually yields ≈ x+CoT); only this one length accumulation is changed — no change to architecture / math / training config / renderer |
 | 9.2.2 | 2026-10-15 | 0012 sample-length accounting follow-up: closes two same-class omissions — ① `_truncate_pairs` now counts the assistant's `reasoning_content` (CoT); ② both menu 11 and `_truncate_pairs` now count the `tool_calls` spliced into the assistant span (reusing the existing `_render_tool_calls`, not gated by `TRAIN_ON_REASONING`); only fills in the omitted training-span components of the length estimate — no change to architecture / math / training config / renderer |
-| **9.2.3** | **2026-10-16** | **0012 closed-form 2×2 matrix-exponential fp32 overflow / NaN fix: the old implementation multiplied `e^μ` (underflows to 0 for large δ) by `cosh(√s²)` (overflows to inf for large δ) ⇒ `0 × inf = NaN`; now exponentiated directly by eigenvalue `e^{λ±}=e^{μ±√s²}` (`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` always finite), `f=(e^{λ+}−e^{λ-})/(2√s²)`, `g=(e^{λ+}+e^{λ-})/2`, mathematically identical; `CF_EXPM_MIN_ABS_S2` 1e-6→1.0 (the analytic series/closed-form handoff); only the numeric implementation of `_closed_form_expm_2x2` is changed — no change to architecture / math semantics / training config** |
+| 9.2.3 | 2026-10-16 | 0012 closed-form 2×2 matrix-exponential fp32 overflow / NaN fix: the old implementation multiplied `e^μ` (underflows to 0 for large δ) by `cosh(√s²)` (overflows to inf for large δ) ⇒ `0 × inf = NaN`; now exponentiated directly by eigenvalue `e^{λ±}=e^{μ±√s²}` (`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` always finite), `f=(e^{λ+}−e^{λ-})/(2√s²)`, `g=(e^{λ+}+e^{λ-})/2`, mathematically identical; `CF_EXPM_MIN_ABS_S2` 1e-6→1.0 (the analytic series/closed-form handoff); only the numeric implementation of `_closed_form_expm_2x2` is changed — no change to architecture / math semantics / training config |
+| **9.3.0** | **2026-10-21** | **0012 training-step CUDA Graph now supports batch>1 + stale capture stream fix: the cache key becomes `(B, bT)` and the input/label/mask buffers are allocated as `(B, bT)`; the whole batch is padded to one bucket length (pad rows use `label=-100` / `attn=0`, so they neither contribute to the loss nor cross the attention mask); `torch.cuda.graph(g, stream=side)` makes the capture stream equal to the warmup stream, structurally eliminating the torch ≥ 2.13 stale-capture-stream abort; new `TRAIN_GRAPH_MAX_TOKENS=32768` memory guard plus "evict before capture"; MoE is explicitly not captured because of its dynamic `nonzero` lengths; no change to architecture / math semantics / training config** |
+
+## 🚀 What's New in 9.3.0
+
+> Positioning: **the training-step CUDA Graph is extended from "batch=1 only" to "any batch", plus a fix for the torch ≥ 2.13 stale-capture-stream validation** (**only the buffers, cache and capture stream of `TrainStepGraphRunner` are changed — no change to architecture / math semantics / training config**).
+
+- **batch>1 support**: the cache key changes from `bT` to `(B, bT)` and the input / label / mask buffers are allocated as `(B, bT)`; the whole batch is padded to one bucket length, and pad rows use `label=-100` with `attn=0` so they neither contribute to the loss nor cross the attention mask. Mathematically equivalent to the per-batch eager path (tail padding only).
+- **Capture stream = warmup stream**: `torch.cuda.graph(g, stream=side)` makes the capture stream identical to the warmup stream. torch ≥ 2.13 validates the stream recorded on every autograd node, so the old "side-stream warmup + default capture stream" pattern is rejected as a stale capture stream; this version removes the problem structurally (no global override flag, no version branching).
+- **Memory guard**: `TRAIN_GRAPH_MAX_TOKENS = 32768` is checked against the `Σ B×bT` of all cached graphs; when exceeded, LRU entries are evicted before capture, and if it still does not fit the runner falls back to eager. This is a resource guard, not a dynamics threshold — it changes no math.
+- **Evict before capture**: avoids the peak where a new graph is already allocated while the old one is not yet released; each cache entry keeps a `stream` reference so the graph's private memory pool is not destroyed when the stream is garbage-collected.
+- **MoE is explicitly not captured**: `MoEFFN.forward` derives variable-length token indices via `hit.nonzero()` and performs a `bool(hit.any())` host sync, so shapes depend on data while CUDA Graph requires static shapes; dense all-expert evaluation costs `E/top_k` times the compute, and fixed-capacity dispatch drops overflow tokens. Both routes have explicit costs, so MoE keeps falling back to eager.
+- **Verification boundary**: all 13 files pass AST, BOM / line endings are preserved byte-for-byte, and the shared block sha256 is identical; **no end-to-end GPU test was run** (the GPU was occupied by a training job at release time), so no claim is made that real capture has been exercised.
 
 ## 🚀 What's New in 9.2.3
 
@@ -891,5 +915,5 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.2.3
-Last Updated: 2026-10-16
+Version: 9.3.0
+Last Updated: 2026-10-21

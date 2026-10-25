@@ -310,9 +310,11 @@ USE_ADAMW8BIT = True              # True=主训练优化器改用 bitsandbytes A
                                   #   非 CUDA 或未安装 bitsandbytes 时自动回退本文件原生优化器（Adafactor/AdamW）。
 USE_TRAIN_STEP_CUDA_GRAPH = True  # True=把训练步的 fwd+bwd 抓成 CUDA Graph（消除每步 kernel 启动开销）；
                                   #   optimizer.step()/scheduler.step()/梯度裁剪留在图外（8-bit 优化器不支持 capturable）；
-                                  #   仅 CUDA + 非 MoE + batch=1 生效；抓图失败自动回退 eager（仅性能回退，数学不变）。
+                                  #   仅 CUDA + 非 MoE 生效（batch 任意）；抓图失败自动回退 eager（仅性能回退，数学不变）。
 TRAIN_GRAPH_BUCKET = 512          # 训练图按序列长度分桶粒度：T 向上取整到该倍数（pad 位置 label=-100 被 mask 忽略）。
 TRAIN_GRAPH_MAX_GRAPHS = 4        # 训练图缓存上限（超出按 LRU 淘汰，控制显存占用）。
+TRAIN_GRAPH_MAX_TOKENS = 32768    # 所有已缓存训练图共享的 token 上限（Σ B×bT）：超出先按 LRU 淘汰再捕获，
+                                  #   仍放不下则回退 eager。这是显存护栏，不改变任何数学语义（不是动力学阈值）。
 
 # ============================================================
 # 显存优化（04elite 新增）
@@ -3223,10 +3225,11 @@ def build_optimizer(param_groups, lr, weight_decay, fallback_factory):
 
 
 class TrainStepGraphRunner:
-    """007elite：把「训练步 fwd+bwd」抓成 CUDA Graph，按序列长度分桶缓存。
+    """007elite：把「训练步 fwd+bwd」抓成 CUDA Graph，按 (batch, 序列长度) 分桶缓存。
     - optimizer.step()/scheduler.step()/梯度裁剪均留在图外（8-bit 优化器不支持 capturable）。
     - 分桶：T 向上取整到 TRAIN_GRAPH_BUCKET 的倍数（pad 位置 label=-100 被 mask 忽略，数学等价）。
-    - 缓存超上限按 LRU 淘汰；任一不支持/抓图失败情形永久回退 eager（仅性能回退，数学逐位一致）。"""
+    - batch>1：整批 pad 到同一 bT，行间独立；pad 行 label=-100 且 attn=0，不参与 loss、不越过 mask。
+    - 缓存超上限（图数 / 总 token）按 LRU 淘汰；任一不支持/抓图失败情形永久回退 eager（仅性能回退，数学逐位一致）。"""
 
     def __init__(self, model, amp_ctx, device, accumulation_steps):
         self.model = model
@@ -3235,9 +3238,12 @@ class TrainStepGraphRunner:
         self.accum = max(1, int(accumulation_steps))
         self._cache = {}
         self._order = []
+        self._tokens = 0
         self._failed = False
         self._diag_printed = False
         _offload = model.has_offloaded_params() if hasattr(model, 'has_offloaded_params') else False
+        # MoE 仍不抓图：forward 用 hit.nonzero() 得到变长 token 索引，并有 bool(hit.any()) 主机同步，
+        #   形状随数据变化；CUDA Graph 要求静态形状。稠密全专家是 E/top_k 倍计算，固定容量则丢 token。
         self.enabled = bool(USE_TRAIN_STEP_CUDA_GRAPH and device.type == 'cuda'
                             and not getattr(model, 'moe_enabled', False) and not _offload)
 
@@ -3248,28 +3254,40 @@ class TrainStepGraphRunner:
     def run(self, input_ids, labels, attn_mask):
         if not self.enabled or self._failed:
             return None
-        if input_ids.dim() != 2 or input_ids.shape[0] != 1:
+        if input_ids.dim() != 2:
             return None
-        T = int(input_ids.shape[1])
-        if T <= 0 or T > MAX_SEQ_LEN:
+        B, T = int(input_ids.shape[0]), int(input_ids.shape[1])
+        if B <= 0 or T <= 0 or T > MAX_SEQ_LEN:
             return None
         bT = self._bucket(T)
-        ent = self._cache.get(bT)
+        key = (B, bT)
+        ent = self._cache.get(key)
         if ent is None:
-            ent = self._capture(bT)
+            # 先淘汰、再捕获：避免「新图已分配 + 旧图未释放」的显存峰值叠加
+            _cap = max(1, int(TRAIN_GRAPH_MAX_TOKENS))
+            while self._order and (self._tokens + B * bT) > _cap:
+                old = self._cache.pop(self._order.pop(0), None)
+                if old is not None:
+                    self._tokens -= old['Bt']
+            if (self._tokens + B * bT) > _cap:
+                return None                     # 单图即超上限 → eager
+            while len(self._order) >= max(1, int(TRAIN_GRAPH_MAX_GRAPHS)):
+                old = self._cache.pop(self._order.pop(0), None)
+                if old is not None:
+                    self._tokens -= old['Bt']
+            ent = self._capture(B, bT)
             if ent is None:
                 self._failed = True
                 return None
-            self._cache[bT] = ent
-            self._order.append(bT)
-            while len(self._order) > max(1, int(TRAIN_GRAPH_MAX_GRAPHS)):
-                self._cache.pop(self._order.pop(0), None)
+            self._cache[key] = ent
+            self._order.append(key)
+            self._tokens += ent['Bt']
         else:
             try:
-                self._order.remove(bT)
+                self._order.remove(key)
             except ValueError:
                 pass
-            self._order.append(bT)
+            self._order.append(key)
         ent['ids'].zero_()
         ent['labels'].fill_(-100)
         ent['attn'].zero_()
@@ -3279,12 +3297,12 @@ class TrainStepGraphRunner:
         ent['graph'].replay()
         return ent['loss'], ent['activity']
 
-    def _capture(self, bT):
+    def _capture(self, B, bT):
         try:
             dev = self.device
-            ids = torch.zeros((1, bT), dtype=torch.long, device=dev)
-            labels = torch.full((1, bT), -100, dtype=torch.long, device=dev)
-            attn = torch.zeros((1, bT), dtype=torch.long, device=dev)
+            ids = torch.zeros((B, bT), dtype=torch.long, device=dev)
+            labels = torch.full((B, bT), -100, dtype=torch.long, device=dev)
+            attn = torch.zeros((B, bT), dtype=torch.long, device=dev)
             side = torch.cuda.Stream()
             side.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(side):
@@ -3299,7 +3317,9 @@ class TrainStepGraphRunner:
                     _p.grad.zero_()
             torch.cuda.synchronize()
             g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g):
+            # 捕获流 = 预热流 side：autograd 节点记录的 stream 与捕获流一致，
+            #   结构性避免 torch>=2.13 的 stale capture stream 校验中止（无需全局 override 标志）。
+            with torch.cuda.graph(g, stream=side):
                 with self.amp_ctx:
                     loss, activity, _la = self.model(ids, labels, position_offset=0, attention_mask=attn)
                 (loss / self.accum).backward()
@@ -3309,9 +3329,9 @@ class TrainStepGraphRunner:
             torch.cuda.synchronize()
             if not self._diag_printed:
                 self._diag_printed = True
-                print("[TRAIN_GRAPH_DIAG] capture OK bucket_T=%d" % bT, flush=True)
+                print("[TRAIN_GRAPH_DIAG] capture OK batch=%d bucket_T=%d" % (B, bT), flush=True)
             return {'graph': g, 'ids': ids, 'labels': labels, 'attn': attn,
-                    'loss': loss, 'activity': activity}
+                    'loss': loss, 'activity': activity, 'stream': side, 'Bt': B * bT}
         except Exception as _e:
             if not self._diag_printed:
                 self._diag_printed = True
