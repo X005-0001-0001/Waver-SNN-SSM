@@ -6,6 +6,40 @@
 
 ---
 
+## 9.4.1 — 2026-11-27
+
+> 定位：**修复 9.4.0 的 LR 调度失效**——9.4.0 新增了 `LR_RATIO_ETA_MIN` 与 `CROSS_SEGMENT_COSINE` 两个常量，但 `WarmupCosineScheduler` 仍为旧版、调用点仍用 `COSINE_ETA_MIN / LEARNING_RATE`，**两个常量定义后从未被读取**，即「LR 比例」与「跨段连续退火」两项功能实际未生效。（**只改 LR 调度器与其调用点，不改模型结构 / 数学语义 / 数值路径。**）
+
+### 缺陷与根因
+- **实测暴露**：真实训练日志中峰值 LR = 3e-5，但第 1 步 `LR: 0.000010`。
+- **根因**：`eta_min` 被折算为 `COSINE_ETA_MIN / LEARNING_RATE = 1e-5 / 3e-5 = 0.3333`；该值同时充当「预热起点比例」与「末/峰比」，故 **末/峰 = 33.3%**（应为 10%），且预热起点被抬高到 1e-5（并非从接近 0 起步）。训练跑满 40237 步后 LR 仅降到 1e-5，几乎不退火。
+
+### 修复
+- 重写 `WarmupCosineScheduler`：新增 `global_start / global_total / start_factor` 三个参数（**向后兼容**：`global_total<=0` 且 `start_factor=None` 时与旧版逐位一致），并抽出 `_raw_factor()` 统一计算比例。跨段模式下以单个长 cosine 横跨全部段，段首用 `start_factor` 从「上段末 factor」线性过渡，杜绝跳变。
+- 重写调用点：`eta_min` 改用 `LR_RATIO_ETA_MIN` 比例（由 `LR_RATIO_ETA_MIN_ENABLED` 控制，关闭时退回原折算）；`CROSS_SEGMENT_COSINE` 开启时从已恢复的 `scheduler_extra` 读取 `global_start / global_total / last_factor`，无断点则本段自成一个完整周期；并恢复 scheduler 内部计数。
+
+### 修复后实测（LR=3e-5，40237 步）
+```
+step 0      3.00e-05  (100.00%)
+step 8000   2.75e-05  ( 91.50%)
+step 20000  1.66e-05  ( 55.42%)
+step 28000  8.71e-06  ( 29.02%)
+step 40000  3.00e-06  ( 10.01%)   ← 精确到达设定的末/峰 10%
+```
+
+### 变更范围
+- ultra3：**12 个** 0012 文件。
+- 旗舰版：`d:\旗舰版\0.85B1\3120012elitelinux.py`。
+- release 仓：`v9/` 的 4 个 312 文件。
+
+### 校验（实测）
+- ✅ 17 个文件（ultra3 12 + 旗舰版 1 + release 4）`ast.parse` + `py_compile` 全通过。
+- ✅ scheduler 行为以真实 `torch.optim.SGD` + `scheduler.step()` 推进实测，曲线正确。
+- ⚠️ **仍未端到端实测**：GPU + `bnb.optim.AdamW8bit` + 训练步 CUDA Graph 路径。
+- ⚠️ **更正 9.4.0 说明**：9.4.0 提交信息中「跨段连续退火」「`LR_RATIO_ETA_MIN` 替代绝对下限折算」两项当时**并未生效**，本版才真正落地；9.4.0 的其余改动（断点续训 / 多存档点 / RL 判分严格化 / jsonl 步数估算）均已验证有效。
+
+---
+
 ## 9.4.0 — 2026-11-27
 
 > 定位：**可中断续训 + 多存档点系统 + RL 判分严格化**（**只改训练编排 / 检查点 IO / RL 奖励判定，不改模型结构 / 数学语义 / 数值路径**）。三个子系统均可通过开关独立关闭；关闭时与 9.3.0 行为一致。

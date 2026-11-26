@@ -9,7 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.4.0`（2026-11-27）** —— **可中断续训 + 多存档点系统 + RL 判分严格化**。①**断点续训**：原子写入的轻量断点文件（`resume_state.json`，几 KB）记录 `epoch/batch_idx/optimizer_step/scheduler_last_epoch/lr_now`，恢复时利用固定种子（`Random(42+epoch*1000)`）的确定性窗口顺序精确跳过已消费 batch，并对齐 `scheduler.last_epoch` 立即刷新 LR（不跳回峰值）；配合可选保存 optimizer/scheduler 状态实现动量延续。②**多存档点**：编号存档点 `ckpt_000N.pt` + 同名 `.json` 索引，`brain.pt` 降为列表中普通一条、不再隐式自动加载；训练 / 对话 / RL 统一「先选后载」，可用权重指纹（`model_state_dict` 的 sha256）校验权重与进度不错配。③**跨段连续退火**：`WarmupCosineScheduler` 新增 `global_start/global_total/start_factor`，把「每段独立 cosine」改为跨段单一长 cosine（实测段间 LR 差 <1e-7）；并以 `LR_RATIO_ETA_MIN` 比例替代原绝对下限折算（原实现在低峰值 LR 时末/峰比高达 0.667，末期几乎不衰减）。④**RL 判分严格化**：修复 4 处可 hack 的判定缺陷（空预测在空/纯标点答案题上被判 1.0；无标记时 fallback 到「最后一行」；`number` 取最后数字；`choice` 取最后孤立字母），改为必须 `\boxed{}` 或「答案:」显式标记，空预测判 0，无有效答案的题跳过。⑤**jsonl 步数估算**：改用可用样本数（预扫）而非行数，修正 warmup / cosine 调度错位。**不改模型结构 / 数学语义 / 数值路径；三个子系统均可开关独立关闭。**
+> **当前最新 / Latest：`9.4.1`（2026-11-27）** —— **修复 9.4.0 的 LR 调度失效**：9.4.0 虽新增 `LR_RATIO_ETA_MIN` / `CROSS_SEGMENT_COSINE` 常量，但 `WarmupCosineScheduler` 仍为旧版、调用点仍用 `COSINE_ETA_MIN / LEARNING_RATE`，两常量从未被读取 ⇒ 末/峰比 33.3%（应 10%）、预热起点被抬高到 1e-5。本版重写 scheduler（新增 `global_start / global_total / start_factor`，向后兼容）与调用点，实测末/峰精确落在 10.0%。**只改 LR 调度器与其调用点，不改模型结构 / 数学语义 / 数值路径。**
+>
+> 上一版 / Previous：`9.4.0`（2026-11-27） —— **可中断续训 + 多存档点系统 + RL 判分严格化**。①**断点续训**：原子写入的轻量断点文件（`resume_state.json`，几 KB）记录 `epoch/batch_idx/optimizer_step/scheduler_last_epoch/lr_now`，恢复时利用固定种子（`Random(42+epoch*1000)`）的确定性窗口顺序精确跳过已消费 batch，并对齐 `scheduler.last_epoch` 立即刷新 LR（不跳回峰值）；配合可选保存 optimizer/scheduler 状态实现动量延续。②**多存档点**：编号存档点 `ckpt_000N.pt` + 同名 `.json` 索引，`brain.pt` 降为列表中普通一条、不再隐式自动加载；训练 / 对话 / RL 统一「先选后载」，可用权重指纹（`model_state_dict` 的 sha256）校验权重与进度不错配。③**跨段连续退火**：`WarmupCosineScheduler` 新增 `global_start/global_total/start_factor`，把「每段独立 cosine」改为跨段单一长 cosine（实测段间 LR 差 <1e-7）；并以 `LR_RATIO_ETA_MIN` 比例替代原绝对下限折算（原实现在低峰值 LR 时末/峰比高达 0.667，末期几乎不衰减）。④**RL 判分严格化**：修复 4 处可 hack 的判定缺陷（空预测在空/纯标点答案题上被判 1.0；无标记时 fallback 到「最后一行」；`number` 取最后数字；`choice` 取最后孤立字母），改为必须 `\boxed{}` 或「答案:」显式标记，空预测判 0，无有效答案的题跳过。⑤**jsonl 步数估算**：改用可用样本数（预扫）而非行数，修正 warmup / cosine 调度错位。**不改模型结构 / 数学语义 / 数值路径；三个子系统均可开关独立关闭。**
 
 > 上一版 / Previous：`9.3.0`（2026-10-21）—— **0012 训练步 CUDA Graph：支持 batch>1 + 修复 stale capture stream**。缓存 key 由 `bT` 改为 `(B, bT)`、缓冲按 `(B, bT)` 分配，整批 pad 到同一桶长（pad 行 `label=-100` / `attn=0`，不参与 loss、不越过 mask）；`torch.cuda.graph(g, stream=side)` 让捕获流与预热流一致，结构性消除 torch ≥ 2.13 的 stale capture stream 中止；新增 `TRAIN_GRAPH_MAX_TOKENS=32768` 显存护栏与「先淘汰、再捕获」；MoE 因动态 `nonzero` 变长明确不抓图。**不改模型结构 / 数学语义 / 训练配置。**
 
@@ -967,5 +969,5 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.4.0
+Version: 9.4.1
 Last Updated: 2026-11-27
