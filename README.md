@@ -9,7 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.5.0`（2026-11-27）** —— **关闭训练步 CUDA Graph（实测负优化）**：真实模型（149.7M / RTX 5080 16GB / bf16）实测 B=1/T=2048 下 Eager 1106 ms vs Graph 1707 ms ⇒ **0.65x（慢 54%）**。根因三项：①`USE_GRADIENT_CHECKPOINT=True` 与图冲突（反向需重算前向，图内无法真实调度）；②每次 replay 前 6 次 buffer 操作且按桶长 bT=4096 而非实际 T=2048，开销已超图上收益；③本模型 kernel 本够重，启动开销占比低。故 `USE_TRAIN_STEP_CUDA_GRAPH` 改为 `False`（仅影响速度，数学逐位不变）。同时修复其预热逻辑（旧预热带 `labels` 全 -100 ⇒ CE 的 mask 全 0 ⇒ 部分 kernel 变体在捕获期才首次编译 ⇒ 抓图失败），改为真实形状假数据 + 预热 3→5，实测抓图由 FAILED 变 OK。**模型结构 / 数学语义 / 数值路径不变。**
+> **当前最新 / Latest：`9.5.1`（2026-11-27）** —— **旗舰版 `BATCH_SIZE` 5→4（实测吞吐饱和点）+ bnb 8-bit 断点恢复实测通过**。①吞吐实测（真实模型 149.7M / RTX 5080 / bf16 / T=4096）：B=1/2/3/4/5 分别为 1809/1957/1981/**2037**/**2037** tok/s、显存 4.17/6.52/8.83/**11.14**/13.47 GB ⇒ **B=4 与 B=5 吞吐完全相同但 B=5 每步多 2013 ms、多吃 2.33 GB，已越过饱和点**，故旗舰版降至 4（ultra3 与 release 对照组保持 B=1）。②`bnb.optim.AdamW8bit` 断点保存/恢复实测：跑 5 步存盘 → 销毁 → 以不同种子重建 → `load_state_dict` → 续跑 5 步，与「一口气 10 步」相比 **loss 与权重最大绝对差均为 0.000000e+00**，`step` 计数 5→5，动量真实恢复。**模型结构 / 数学语义 / 数值路径不变。**
+>
+> 上一版 / Previous：`9.5.0`（2026-11-27） —— **关闭训练步 CUDA Graph（实测负优化）**：真实模型（149.7M / RTX 5080 16GB / bf16）实测 B=1/T=2048 下 Eager 1106 ms vs Graph 1707 ms ⇒ **0.65x（慢 54%）**。根因三项：①`USE_GRADIENT_CHECKPOINT=True` 与图冲突（反向需重算前向，图内无法真实调度）；②每次 replay 前 6 次 buffer 操作且按桶长 bT=4096 而非实际 T=2048，开销已超图上收益；③本模型 kernel 本够重，启动开销占比低。故 `USE_TRAIN_STEP_CUDA_GRAPH` 改为 `False`（仅影响速度，数学逐位不变）。同时修复其预热逻辑（旧预热带 `labels` 全 -100 ⇒ CE 的 mask 全 0 ⇒ 部分 kernel 变体在捕获期才首次编译 ⇒ 抓图失败），改为真实形状假数据 + 预热 3→5，实测抓图由 FAILED 变 OK。**模型结构 / 数学语义 / 数值路径不变。**
 >
 > 上一版 / Previous：`9.4.1`（2026-11-27） —— **修复 9.4.0 的 LR 调度失效**：9.4.0 虽新增 `LR_RATIO_ETA_MIN` / `CROSS_SEGMENT_COSINE` 常量，但 `WarmupCosineScheduler` 仍为旧版、调用点仍用 `COSINE_ETA_MIN / LEARNING_RATE`，两常量从未被读取 ⇒ 末/峰比 33.3%（应 10%）、预热起点被抬高到 1e-5。本版重写 scheduler（新增 `global_start / global_total / start_factor`，向后兼容）与调用点，实测末/峰精确落在 10.0%。**只改 LR 调度器与其调用点，不改模型结构 / 数学语义 / 数值路径。**
 >
@@ -971,5 +973,5 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.5.0
+Version: 9.5.1
 Last Updated: 2026-11-27
