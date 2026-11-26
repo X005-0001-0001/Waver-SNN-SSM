@@ -6,6 +6,40 @@
 
 ---
 
+## 9.5.0 — 2026-11-27
+
+> 定位：**关闭训练步 CUDA Graph（实测负优化）+ 修复其预热逻辑**。**只改训练图的可选加速路径与其开关，不改模型结构 / 数学语义 / 数值路径**；关闭后与 eager 逐位一致（本就更慢，故纯收益）。
+
+### 实测结论（真实模型 149.7M / RTX 5080 16GB / bf16）
+```
+B=1, T=2048:   Eager 1106 ms/step   vs   CUDA Graph 1707 ms/step   =>   0.65x（慢 54%）
+```
+
+### 根因（三项，均已定位）
+1. **`USE_GRADIENT_CHECKPOINT=True` 与 CUDA Graph 冲突**：grad checkpoint 的反向需要**重算前向**，而图内无法进行真实的重算调度，导致「显存换时间」的优势反而变成负担。
+2. **每次 `replay()` 前有 6 次 buffer 操作**（`zero_` / `fill_` / `copy_` ×3），且 buffer 长度用的是**桶长 `bT`（4096）**而非实际 `T`（2048）—— 这些操作的开销已超过图节省的 kernel 启动开销。
+3. **本模型 kernel 本身够重**（H=512 / V=40000 / L=15 的大 matmul），kernel 启动开销占比低；CUDA Graph 优化的是「大量小 kernel 的启动」，此处本就没多少可省。
+
+### 变更
+- **`USE_TRAIN_STEP_CUDA_GRAPH` 由 `True` 改为 `False`**（仅影响速度，数学逐位不变）。
+- **保留并应用预热修复（原 P38 内容）**：`_capture` 的预热由「全 0 ids / 全 -100 labels / 全 0 attn」改为「随机 ids / 有效 labels / 全 1 attn」的真实形状假数据，并把预热次数 3→5。
+  - 原因：旧预热带 `labels` 全 -100 ⇒ `mask=(labels!=-100).float()` 全 0 ⇒ LMHead-CE 与 MTP 头走空路径 ⇒ 部分 kernel 变体在**捕获期间**才首次编译 ⇒ torch 禁止 capture 中 JIT ⇒ `cudaErrorStreamCaptureInvalidated` 抓图失败。
+  - 修复后实测 `[TRAIN_GRAPH_DIAG] capture OK batch=1 bucket_T=4096`（此前为 `capture FAILED`）。
+  - 新增开关 `CUDA_GRAPH_WARMUP_USE_REAL_SHAPE`（默认 True）；关闭可退回旧预热行为。
+- **捕获失败时输出可操作诊断**：区分「捕获期 JIT」「显存不足」两类，并提示关闭开关的方法。
+
+### 验证（实测）
+- ✅ 13 + 4 个文件 `ast.parse` + `py_compile` 全通过。
+- ✅ 关闭图后真实训练步连跑 6 步：loss 9.9227 → 9.2550 稳定下降，无报错、无 OOM、无 capture 尝试；稳态 **1061~1105 ms/step**（首步 52.4 s 为 Triton autotune 编译）。
+- ⚠️ **未验证**：真实 40K 步全程；`bnb.optim.AdamW8bit` 断点恢复（同前版遗留）。
+
+### 变更范围
+- ultra3：**12 个** 0012 文件。
+- 旗舰版：`d:\旗舰版\0.85B1\3120012elitelinux.py`。
+- release 仓：`v9/` 的 4 个 312 文件。
+
+---
+
 ## 9.4.1 — 2026-11-27
 
 > 定位：**修复 9.4.0 的 LR 调度失效**——9.4.0 新增了 `LR_RATIO_ETA_MIN` 与 `CROSS_SEGMENT_COSINE` 两个常量，但 `WarmupCosineScheduler` 仍为旧版、调用点仍用 `COSINE_ETA_MIN / LEARNING_RATE`，**两个常量定义后从未被读取**，即「LR 比例」与「跨段连续退火」两项功能实际未生效。（**只改 LR 调度器与其调用点，不改模型结构 / 数学语义 / 数值路径。**）

@@ -301,7 +301,10 @@ GAIN_NORM_ENABLED = True
 USE_CUDA_GRAPH_DECODE = True   # P2-9：逐 token 解码步抓成 CUDA Graph（消除每步几十次 kernel 启动开销）。
                                #   仅在 CUDA + 非 MoE 下生效（MoE 的 for e in ...: hit.any() 早退是数据相关控制流，不可捕获）；
                                #   抓图失败自动回退普通 step。已启用（P18 Stage 3 验证：12/12 抓图成功且与 eager 逐位一致）。
-CUDA_GRAPH_WARMUP = 3          # 抓图前预热步数（让 cuBLAS/cuSOLVER workspace 在图外预分配）
+CUDA_GRAPH_WARMUP = 5            # P38：预热次数（从 3 提到 5，确保所有 kernel 变体编译完）
+CUDA_GRAPH_WARMUP_USE_REAL_SHAPE = True   # P38：预热用「真实形状 + 有效 labels/attn」的假数据
+                                          #   旧行为用全 0 ids / 全 -100 labels ⇒ CE 的 mask 全 0
+                                          #   ⇒ 部分分支/kernel 变体未被预热到 ⇒ 捕获期间触发 JIT ⇒ 失败          # 抓图前预热步数（让 cuBLAS/cuSOLVER workspace 在图外预分配）
 
 # ============================================================
 # 0010 新增：多 token 预测（MTP）——共享 output_norm 的多头监督
@@ -331,7 +334,7 @@ DEPTH_BUDGET_NORM_ENABLED = True   # True=深度预算归一化残差缩放（Σ
 # ============================================================
 USE_ADAMW8BIT = True              # True=主训练优化器改用 bitsandbytes AdamW8bit（8-bit 动量状态，约省 36% 优化器显存）；
                                   #   非 CUDA 或未安装 bitsandbytes 时自动回退本文件原生优化器（Adafactor/AdamW）。
-USE_TRAIN_STEP_CUDA_GRAPH = True  # True=把训练步的 fwd+bwd 抓成 CUDA Graph（消除每步 kernel 启动开销）；
+USE_TRAIN_STEP_CUDA_GRAPH = False   # P39：实测负优化（0.65x，即慢 54%）——grad-checkpoint 与图冲突 + buffer 拷贝开销 > kernel 启动节省。仅影响速度，数学逐位不变。  # True=把训练步的 fwd+bwd 抓成 CUDA Graph（消除每步 kernel 启动开销）；
                                   #   optimizer.step()/scheduler.step()/梯度裁剪留在图外（8-bit 优化器不支持 capturable）；
                                   #   仅 CUDA + 非 MoE 生效（batch 任意）；抓图失败自动回退 eager（仅性能回退，数学不变）。
 TRAIN_GRAPH_BUCKET = 512          # 训练图按序列长度分桶粒度：T 向上取整到该倍数（pad 位置 label=-100 被 mask 忽略）。
@@ -3685,9 +3688,26 @@ class TrainStepGraphRunner:
     def _capture(self, B, bT):
         try:
             dev = self.device
-            ids = torch.zeros((B, bT), dtype=torch.long, device=dev)
-            labels = torch.full((B, bT), -100, dtype=torch.long, device=dev)
-            attn = torch.zeros((B, bT), dtype=torch.long, device=dev)
+            # ============ P38：预热用「真实形状 + 有效数据」的假 batch ============
+            # 旧实现用 ids=0 / labels=-100 / attn=0，导致 CE 的 mask 全 0、MTP 分支走空路径，
+            # 部分 kernel 变体在捕获期间才首次编译 ⇒ torch 拒绝 JIT ⇒ 捕获失败。
+            if CUDA_GRAPH_WARMUP_USE_REAL_SHAPE:
+                vocab = int(getattr(self.model, 'vocab_size', 0) or 0)
+                if vocab <= 1:
+                    vocab = 1000
+                _g = torch.Generator(device=dev)
+                _g.manual_seed(1234)
+                ids = torch.randint(0, vocab, (B, bT), dtype=torch.long, device=dev, generator=_g)
+                # labels = ids（正常 token，不被 ignore）；末尾少量 pad 成 -100 更贴近真实（可选）
+                labels = ids.clone()
+                if bT >= 16:
+                    labels[:, -1] = -100          # 模拟最后一个位置无 target
+                attn = torch.ones((B, bT), dtype=torch.long, device=dev)
+            else:
+                ids = torch.zeros((B, bT), dtype=torch.long, device=dev)
+                labels = torch.full((B, bT), -100, dtype=torch.long, device=dev)
+                attn = torch.zeros((B, bT), dtype=torch.long, device=dev)
+
             side = torch.cuda.Stream()
             side.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(side):
@@ -3723,6 +3743,17 @@ class TrainStepGraphRunner:
                 import traceback as _tb
                 print("[TRAIN_GRAPH_DIAG] capture FAILED %s: %s" % (type(_e).__name__, _e), flush=True)
                 _tb.print_exc()
+                _msg = str(_e).lower()
+                if "captur" in _msg or "jit compile" in _msg or "invalidated" in _msg:
+                    print("[TRAIN_GRAPH_DIAG] 诊断：捕获期间触发了新的 kernel 编译（torch 禁止在 capture 中 JIT）。"
+                          "可能原因：①预热未覆盖全部 kernel 变体（见 CUDA_GRAPH_WARMUP_USE_REAL_SHAPE）；"
+                          "②triton/torch 版本兼容问题；③显存不足导致 workspace 重新分配。"
+                          "若要关闭训练图：把 USE_TRAIN_STEP_CUDA_GRAPH 设为 False（仅影响速度，数学不变）。",
+                          flush=True)
+                elif "out of memory" in _msg or "oom" in _msg:
+                    print("[TRAIN_GRAPH_DIAG] 诊断：显存不足。CUDA Graph 需要独立的私有内存池，"
+                          "建议减小 BATCH_SIZE / MAX_SEQ_LEN，或关闭 USE_TRAIN_STEP_CUDA_GRAPH。",
+                          flush=True)
             self._failed = True
             return None
 
