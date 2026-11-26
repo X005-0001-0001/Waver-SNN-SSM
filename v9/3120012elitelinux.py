@@ -44,14 +44,14 @@ import random
 import time
 import contextlib
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple, Union
+from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import _LRScheduler
-from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.checkpoint import checkpoint
 
 # 007elite：主训练优化器可选 bitsandbytes AdamW8bit（8-bit 动量状态，省显存）；未安装/非 CUDA 时自动回退原生优化器。
@@ -190,11 +190,30 @@ MINI_STATE_DIM = 2            # 迷你状态维度，必须偶数，K = MINI_STA
 
 
 # ============================================================
-# 余弦退火重启调度器参数
 # ============================================================
-COSINE_T_0 = 1000            # 第一个余弦周期的步数（步数到达后重启学习率）
-COSINE_T_MULT = 1            # 每次重启后周期倍数（1=固定周期，2=周期翻倍）
 COSINE_ETA_MIN = 1e-5        # 学习率下限（文档值；实际段末 LR = eta_min(0.1) × LEARNING_RATE = 1e-5）
+# ============================================================
+# P28：可中断恢复（断电 / 关 WSL / 重启后继续训练）
+# ============================================================
+RESUME_ENABLED = True               # True=启用断点续训；False=旧行为
+RESUME_STATE_FILE = "resume_state.json"   # 轻量状态文件（几 KB，每 N 步原子落盘）
+RESUME_SAVE_INTERVAL_STEPS = 200    # 每多少 optimizer 步写一次 resume_state（断电最多丢这些步）
+RESUME_AUTO = True                  # True=检测到断点就自动恢复；False=启动时询问
+RESUME_VERIFY_FINGERPRINT = True     # True=严格校验 brain.pt 的权重指纹与断点记录一致（强烈建议开）
+RESUME_ON_MISMATCH = 'abort'         # 'abort'=权重指纹不匹配/文件缺失时中止；'weights_only'=只恢复权重不跳 batch
+# ============================================================
+# P30：存档点系统（多存档点 + 选择 + brain 平级）
+# ============================================================
+CKPT_SLOT_ENABLED = True          # True=启用多存档点；False=退回 brain.pt 单一模式
+CKPT_SLOT_PREFIX = "ckpt_"        # 编号存档点前缀（ckpt_0001.pt）
+CKPT_META_ENABLED = True          # 是否写同名 .json 索引（强烈建议开：扫描快）
+CKPT_KEEP_ALL = True              # True=全部保留不自动删
+CKPT_SELECT_ON_USE = True         # True=每次进训练/对话都让用户选存档点；False=自动用最新
+CKPT_BRAIN_IS_SLOT = True         # True=brain.pt 作为列表里普通一条（不再自动加载）
+LR_RATIO_ETA_MIN_ENABLED = True     # True=用比例定义末/峰 LR
+LR_RATIO_ETA_MIN = 0.1              # 余弦末段 / 峰值 的 LR 比
+CROSS_SEGMENT_COSINE = True         # True=跨段连续退火（LR 由全局总进度决定，段间不跳变）
+SAVE_OPTIMIZER_STATE = True         # True=checkpoint 额外保存 optimizer/scheduler（磁盘 +约 250MB）
 
 # ============================================================
 # 冻结控制参数
@@ -409,8 +428,6 @@ NVFP4_QUANTIZE = False         # True=权重打包为 E2M1 4bit（推理/微调�
 NVFP4_BLOCK_SIZE = 32          # NVFP4 量化块大小（scale 粒度）
 
 # 安全有界范围
-COUPLING_SEED = 42
-_coupling_gen = torch.Generator().manual_seed(COUPLING_SEED)
 
 # B/C 投影幅度安全上限
 random.seed(42)
@@ -894,34 +911,6 @@ class WarmupCosineScheduler(_LRScheduler):
         return [base_lr * factor for base_lr in self.base_lrs]
 
 
-
-# ------------------------------------------------------------
-# 余弦退火重启调度器（Cosine Annealing with Warm Restarts）
-# ------------------------------------------------------------
-class CosineAnnealingWarmRestartScheduler(_LRScheduler):
-    """
-    余弦退火重启调度器：
-    - 学习率按余弦曲线从初始值降到 ETA_MIN
-    - 每 T_0 步重启一次，学习率跳回初始值
-    - T_mult 控制每次重启后周期长度的倍增系数
-    - 适用于需要反复探索的训练场景，帮助逃离局部最优
-    """
-    def __init__(self, optimizer, T_0: int, T_mult: int = 1, eta_min: float = 0.0,
-                 last_epoch: int = -1):
-        self.T_0 = T_0
-        self.T_mult = T_mult
-        self.eta_min = eta_min
-        self.T_i = T_0       # 当前周期长度
-        self.t_cur = 0        # 当前周期内的步数
-        super().__init__(optimizer, last_epoch)
-
-    def get_lr(self):
-        if self.t_cur >= self.T_i:
-            self.t_cur = 0
-            self.T_i = self.T_i * self.T_mult
-        factor = self.eta_min + (1 - self.eta_min) *                  (1 + math.cos(math.pi * self.t_cur / self.T_i)) / 2
-        self.t_cur += 1
-        return [base_lr * max(0.0, min(1.0, factor)) for base_lr in self.base_lrs]
 # ------------------------------------------------------------
 # 8.1.0 Linux 编译辅助（只包裹标准算子；开关关闭/编译失败 ⇒ 原样函数，逐位一致）
 # ------------------------------------------------------------
@@ -1032,7 +1021,7 @@ class MTPHead(nn.Module):
 def _blelloch_scan(A_flat: torch.Tensor, b_flat: torch.Tensor) -> torch.Tensor:
     """关联前缀扫描（纯函数，无 autograd 记录）：h_t = A_t @ h_{t-1} + b_t，h_{-1}=0。
     A_flat: (B, T, K, K)   b_flat: (B, T, K)  ->  h: (B, T, K)
-    实值/复值通用；Blelloch up/down sweep，O(log T) 次 kernel launch。"""
+    实值通用；复值亦可（反向已按 A^H 处理，见 BlellochScanFn.backward）；Blelloch up/down sweep，O(log T) 次 kernel launch。"""
     B_flat, T, K, _ = A_flat.shape
     device = A_flat.device
     dtype = A_flat.dtype
@@ -1126,6 +1115,9 @@ class BlellochScanFn(torch.autograd.Function):
             # 反向递推 dh_t = grad_h_t + A_{t+1}^H dh_{t+1}（dh_{T-1}=grad_h_{T-1}）
             # 时间轴反转后仍是线性关联扫描：D_r = A_rev[r-1] D_{r-1} + grad_rev[r]
             A_rev = torch.flip(A_orig, dims=[1]).transpose(-1, -2)
+            # P25：注释声称 A^H（共轭转置），此处补共轭。复值需要 conj，实值恒等（不进分支，逐位不变）。
+            if A_rev.is_complex():
+                A_rev = A_rev.conj()
             grad_rev = torch.flip(grad_h_flat, dims=[1])                # (B_flat, T, K)
             real_dtype = torch.float32 if dtype == torch.float32 else torch.float64
             eye = torch.eye(K, dtype=real_dtype, device=device).to(dtype).unsqueeze(0).expand(B_flat, 1, K, K)
@@ -1297,7 +1289,7 @@ if LINUX_USE_TORCH_COMPILE and LINUX_DISABLE_CUSTOM_OPS and hasattr(torch, 'comp
 
 
 class ParallelComplexWaveLayer(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, state_dim: int = 2, coupling_scale: float = 1.0,
+    def __init__(self, input_dim: int, output_dim: int, state_dim: int = 2,
                  disable_coupling: bool = False, disable_summarizer: bool = False):
         super().__init__()
         self.input_dim = input_dim
@@ -1503,9 +1495,16 @@ class ParallelComplexWaveLayer(nn.Module):
         #   稳定性论证（纯结构性，无任何阈值/裁剪/回退）：
         #     把 Ω 写成复矩阵 Ω_c = (M - diag(ν)) + i·diag(θ_total)，其 Hermitian 部分
         #       (Ω_c + Ω_c^H)/2 = ((M-ν+iθ) + (M^T-ν-iθ))/2 = -diag(ν)     （M^T=-M ⇒ M 项相消；iθ 项相消）
-        #     由 Bendixson 定理 Re(λ(Ω_c)) ≤ λ_max(-diag(ν)) = -min(ν) < 0（ν=exp(nu_log)>0），
-        #     故 |A_t| 的谱半径 ≤ exp(-δ_t·min(ν)) < 1（δ_t=softplus(·)>0）。
+        #     该恒等式 ⇒ 对应对数范数（Dahlquist–Lozinskii 矩阵测度）
+        #       μ₂(Ω) := λ_max((Ω_r + Ω_rᵀ)/2) = λ_max(-diag(ν)) = -min(ν) < 0（ν=exp(nu_log)>0）。
+        #     由对数范数定理 ‖exp(tA)‖₂ ≤ exp(t·μ₂(A))（t ≥ 0，任意实矩阵）得
+        #       ‖A_t‖₂ = ‖exp(δ_t·Ω_t)‖₂ ≤ exp(-δ_t·min(ν)) < 1（δ_t=softplus(·)>0）。
+        #     ‖·‖₂ 满足次乘性 ⇒ 可逐 token 相乘：
+        #       ‖A_t⋯A_1‖₂ ≤ exp(-(Σδ)·min(ν))，故状态 ‖h_t‖₂ ≤ ‖b‖_max/(1-e^{-δ·min(ν)}) 与 T 无关有界。
         #     数据依赖的 θ_δ 不改变 Hermitian 部分 ⇒ 不影响稳定性。
+        #     ⚠️ 此处【不能】用谱半径推理：ρ 不满足次乘性，一般矩阵上「每步 ρ<1 ⇒ 乘积有界」不成立。
+        #       本族之所以安全，是因为上面的 ‖·‖₂ 界本身成立（不是靠 ρ）。
+        #       time_mask 的 A'=(1-m)A+mI 满足 ‖A'‖₂ ≤ (1-m)‖A‖₂+m ≤ 1，但其衰减须按「未 mask 步」累计。
         theta_total = theta if theta_delta is None else (theta + theta_delta)    # (D,K) 或 (B,T,D,K)
         Md = M - torch.diag_embed(nu)                                            # (D,K,K) 实-实/虚-虚块
 
@@ -1985,10 +1984,6 @@ class StreamingJSONLDataset(IterableDataset):
         self.pad_id = tokenizer.pad_token_id
         if any(x is None for x in [self.bos_id, self.eos_id, self.user_id, self.assistant_id, self.end_id]):
             raise ValueError("Tokenizer 缺少必需的特殊 token")
-
-    def _encode(self, text):
-        """??? FastBPE.encode????????????/UNK ?????"""
-        return self.tokenizer.encode(text)
 
     def _tokenize_conversation(self, convs, tools=None):
         """v5：统一走 render_messages + offsets 掩码（与旧实现逐 token 等价，已全语料对拍）。"""
@@ -2990,17 +2985,6 @@ class WaveSNN(nn.Module):
             return total
         return total / n_heads
 
-    def init_states(self, device):
-        """每层返回长度为 loop_config[i] 的 state 列表（每次循环一份独立 SSM 状态）。
-
-        USE_LOOP=False 时 loop_config 全 1 -> 退化为 [state]，与 03elite 结构兼容。
-        """
-        all_states = []
-        for _i, _layer in enumerate(self.layers):
-            _n = int(self.loop_config[_i]) if _i < len(self.loop_config) else 1
-            all_states.append([_layer.init_state(device) for _ in range(_n)])
-        return all_states
-
     @torch.no_grad()
     def prefill(self, input_ids):
         """并行 prefill（P1-8）：一次前向并行跑完整个 prompt，返回 (末位置 logits, 各层状态)。与逐 token step 严格等价。
@@ -3276,12 +3260,239 @@ class WaveSNN(nn.Module):
 # ------------------------------------------------------------
 # 保存 checkpoint（只保存模型权重，不保存词表）
 # ------------------------------------------------------------
+# P29：权重指纹（用于校验「恢复时用的权重 == 断点时的权重」）
+# ------------------------------------------------------------
+def compute_weights_fingerprint(state_dict) -> str:
+    """对 model_state_dict 计算 sha256 指纹。只返回 32 字节 hex，不额外占存储。"""
+    import hashlib as _hl
+    h = _hl.sha256()
+    try:
+        for k in sorted(state_dict.keys()):
+            v = state_dict[k]
+            h.update(k.encode("utf-8"))
+            if hasattr(v, "detach"):
+                t = v.detach().cpu().contiguous()
+                h.update(str(tuple(t.shape)).encode("utf-8"))
+                h.update(t.to("cpu").numpy().tobytes() if hasattr(t, "numpy") else bytes(t.untyped_storage()))
+            else:
+                h.update(str(v).encode("utf-8"))
+    except Exception as e:
+        log_and_print(f"⚠️ 计算权重指纹失败（{type(e).__name__}: {e}）")
+        return ""
+    return h.hexdigest()
+
+
+def _file_weights_fingerprint(path: str) -> str:
+    """读取一个 ckpt 文件并算其 model_state_dict 的指纹（不加载进模型）。"""
+    if not os.path.exists(path):
+        return ""
+    try:
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+        sd = ck.get("model_state_dict") if isinstance(ck, dict) else ck
+        if sd is None:
+            return ""
+        return compute_weights_fingerprint(sd)
+    except Exception as e:
+        log_and_print(f"⚠️ 读取 {path} 失败（{type(e).__name__}: {e}）")
+        return ""
+
+
+# ------------------------------------------------------------
+# P28：断点续训状态文件（原子写，断电安全）
+# ------------------------------------------------------------
+def _resume_state_path():
+    return RESUME_STATE_FILE
+
+
+def save_resume_state(state: dict):
+    """原子写入 resume_state.json：先写 .tmp 再 os.replace，断电不会写坏原文件。"""
+    if not RESUME_ENABLED:
+        return
+    path = _resume_state_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception as e:
+        log_and_print(f"⚠️ 写 resume_state 失败（{type(e).__name__}: {e}）")
+
+
+def load_resume_state():
+    """读取 resume_state.json；不存在或损坏返回 None。"""
+    if not RESUME_ENABLED:
+        return None
+    path = _resume_state_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        if not isinstance(st, dict):
+            return None
+        return st
+    except Exception as e:
+        log_and_print(f"⚠️ resume_state 损坏，忽略（{type(e).__name__}: {e}）")
+        return None
+
+
+def clear_resume_state():
+    for p in (_resume_state_path(), _resume_state_path() + ".tmp"):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------
+# P30：存档点（Slot）管理
+#   - 一个存档点 = <name>.pt（权重+优化器+元数据） + <name>.json（轻量索引）
+#   - 扫描只读 .json，不加载 .pt
+# ------------------------------------------------------------
+def slot_meta_path(pt_path: str) -> str:
+    return os.path.splitext(pt_path)[0] + ".json"
+
+
+def list_slots() -> list:
+    """扫描当前目录所有存档点。返回按编号/时间排序的 dict 列表。
+    每个 dict: {name, pt, meta, step, seg, lr, time, fingerprint, done, size_mb, valid}
+    """
+    slots = []
+    if CKPT_SLOT_ENABLED:
+        for f in sorted(os.listdir('.')):
+            if not f.endswith(".pt"):
+                continue
+            base = os.path.splitext(f)[0]
+            # 编号存档点 or brain
+            if not base.startswith(CKPT_SLOT_PREFIX) and base != "brain":
+                continue
+            mp = slot_meta_path(f)
+            info = dict(name=base, pt=f, meta=mp, step=None, seg=None, lr=None,
+                        time=None, fingerprint=None, done=None, valid=os.path.exists(f),
+                        size_mb=os.path.getsize(f) / 1024 / 1024 if os.path.exists(f) else 0)
+            if CKPT_META_ENABLED and os.path.exists(mp):
+                try:
+                    md = json.load(open(mp, encoding="utf-8"))
+                    info.update(step=md.get('optimizer_step'), seg=md.get('data_path'),
+                                lr=md.get('lr_now'), time=md.get('timestamp'),
+                                fingerprint=md.get('weights_fingerprint'),
+                                done=md.get('segment_done'), batch_idx=md.get('batch_idx'),
+                                epoch=md.get('epoch'))
+                except Exception:
+                    info['valid'] = False
+            slots.append(info)
+    return slots
+
+
+def pick_slot(purpose: str = "使用"):
+    """交互式选择存档点。返回选中的 slot dict，或 None（表示从头训练/取消）。"""
+    slots = list_slots()
+    if not slots:
+        log_and_print(f"（当前目录没有可用存档点，将使用随机初始化）")
+        return None
+
+    print("\n" + "=" * 78)
+    print(f"可用存档点（用于{purpose}）：")
+    print("=" * 78)
+    print(f"{'序号':>4}  {'名称':<14} {'步数':>8} {'LR':>10} {'段':<18} {'时间':<17} {'大小':>8}")
+    print("-" * 78)
+    for i, s in enumerate(slots, 1):
+        seg = os.path.basename(str(s['seg'])) if s['seg'] else "-"
+        seg = seg[:17]
+        step = f"{s['step']:,}" if s['step'] else "-"
+        lr = f"{s['lr']:.2e}" if s['lr'] else "-"
+        tm = (s['time'] or "-")[:16]
+        flag = "" if s['valid'] else " [损坏]"
+        done = " ✔完成" if s['done'] else ""
+        print(f"{i:>4}  {s['name']:<14} {step:>8} {lr:>10} {seg:<18} {tm:<17} {s['size_mb']:>6.0f}MB{flag}{done}")
+    print("-" * 78)
+    print(f"{0:>4}  从头开始（随机初始化，不加载任何存档点）")
+    print(f"{'q':>4}  取消")
+    print()
+
+    while True:
+        raw = input("请选择存档点序号（0=从头开始, q=取消）: ").strip().lower()
+        if raw in ("q", "quit", "exit"):
+            return "CANCEL"
+        try:
+            idx = int(raw)
+        except ValueError:
+            print("输入无效。")
+            continue
+        if idx == 0:
+            return None
+        if 1 <= idx <= len(slots):
+            sel = slots[idx - 1]
+            if not sel['valid']:
+                print(f"⚠️ {sel['name']} 已损坏，请换一个。")
+                continue
+            log_and_print(f"已选择存档点: {sel['name']} ({sel['pt']})")
+            return sel
+        print(f"序号超出范围（1-{len(slots)}）。")
+
+
+def _load_slot_into(model, pt_path: str):
+    """P30：把指定存档点加载进模型，并把 optimizer/scheduler 暂存到 _PENDING_BRAIN_CKPT。"""
+    global _PENDING_BRAIN_CKPT
+    if not os.path.exists(pt_path):
+        raise FileNotFoundError(pt_path)
+    ck = torch.load(pt_path, map_location='cpu', weights_only=False)
+    if isinstance(ck, dict) and 'model_state_dict' in ck:
+        model.load_state_dict(ck['model_state_dict'])
+        _PENDING_BRAIN_CKPT = {k: v for k, v in ck.items() if k != 'model_state_dict'}
+        has_opt = 'optimizer_state_dict' in ck
+        log_and_print("已加载存档点 %s%s" % (os.path.basename(pt_path),
+                      "（含 optimizer 状态）" if has_opt else "（不含 optimizer 状态）"))
+    else:
+        model.load_state_dict(ck)
+        _PENDING_BRAIN_CKPT = None
+    del ck
+    if DEVICE.type == 'cuda':
+        torch.cuda.empty_cache()
+    return True
+
+
+def next_slot_name() -> str:
+    """生成下一个编号存档点名（ckpt_0001, ckpt_0002...）。"""
+    if not CKPT_SLOT_ENABLED:
+        return "interrupted_model"
+    mx = 0
+    for f in os.listdir('.'):
+        if f.startswith(CKPT_SLOT_PREFIX) and f.endswith(".pt"):
+            base = os.path.splitext(f)[0][len(CKPT_SLOT_PREFIX):]
+            try:
+                mx = max(mx, int(base))
+            except ValueError:
+                pass
+    return f"{CKPT_SLOT_PREFIX}{mx + 1:04d}"
+
+
+def write_slot_meta(pt_path: str, meta: dict):
+    if not CKPT_META_ENABLED:
+        return
+    try:
+        mp = slot_meta_path(pt_path)
+        tmp = mp + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, mp)
+    except Exception as e:
+        log_and_print(f"⚠️ 写存档点索引失败（{type(e).__name__}: {e}）")
+
+
+# ------------------------------------------------------------
 def get_next_checkpoint_id() -> str:
     timestamp = int(time.time() * 1000)
     rand = random.randint(0, 10000)
     return f"{timestamp}_{rand}"
 
-def save_checkpoint(model, epoch, custom_filename=None):
+def save_checkpoint(model, epoch, custom_filename=None, optimizer=None, scheduler=None, extra=None):
+    """P28：可选保存 optimizer/scheduler/断点信息（均可缺失，旧读取逻辑完全兼容）。"""
     if custom_filename is None:
         ckpt_id = get_next_checkpoint_id()
         filename = f"checkpoint_{ckpt_id}.pt"
@@ -3290,8 +3501,45 @@ def save_checkpoint(model, epoch, custom_filename=None):
     save_dict = {
         'model_state_dict': model.state_dict(),
         'epoch': epoch}
+    if SAVE_OPTIMIZER_STATE:
+        if optimizer is not None:
+            try:
+                save_dict['optimizer_state_dict'] = optimizer.state_dict()
+            except Exception as _e:
+                log_and_print(f"⚠️ 保存 optimizer 状态失败（{type(_e).__name__}: {_e}）")
+        if scheduler is not None:
+            try:
+                save_dict['scheduler_state_dict'] = scheduler.state_dict()
+                save_dict['scheduler_last_epoch'] = getattr(scheduler, 'last_epoch', 0)
+                _lr0 = scheduler.get_last_lr()[0]
+                _base0 = max(scheduler.base_lrs[0], 1e-30)
+                save_dict['lr_factor'] = _lr0 / _base0
+            except Exception as _e:
+                log_and_print(f"⚠️ 保存 scheduler 状态失败（{_e}）")
+    if extra:
+        save_dict.update(extra)
+    # P29：记录权重指纹，供恢复时校验
+    _fp = ""
+    try:
+        _fp = compute_weights_fingerprint(model.state_dict())
+        save_dict['weights_fingerprint'] = _fp
+    except Exception as _e:
+        log_and_print(f"⚠️ 指纹计算失败（{_e}）")
     torch.save(save_dict, filename)
-    log_and_print(f"保存 checkpoint 至 {filename} (epoch {epoch})")
+    # P30：写同名轻量索引
+    if CKPT_META_ENABLED:
+        _m = dict(step=None, seg=None, lr=None, timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+                  fingerprint=_fp, segment_done=None)
+        if extra:
+            _m.update(optimizer_step=extra.get('optimizer_step'),
+                      data_path=extra.get('data_path'),
+                      lr_now=extra.get('lr_now'),
+                      batch_idx=extra.get('batch_idx'),
+                      epoch=extra.get('epoch'),
+                      segment_done=extra.get('segment_done'))
+        write_slot_meta(filename, _m)
+    _tag = "  [含 optimizer/scheduler]" if SAVE_OPTIMIZER_STATE else ""
+    log_and_print(f"保存 checkpoint 至 {filename} (epoch {epoch}){_tag}")
     return filename
 
 # ------------------------------------------------------------
@@ -3527,7 +3775,8 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                        data_path: str, batch_size: int, epochs: int, lr: float,
                        weight_decay: float, grad_clip: float, log_interval: int,
                        accumulation_steps: int = GRADIENT_ACCUMULATION_STEPS,
-                       file_type: str = 'jsonl'):
+                       file_type: str = 'jsonl',
+                       _selected_slot=None):
     device = DEVICE
     model.to(device)
     log_and_print(f"对角复数波架构：开始全序列训练。数据集: {data_path}")
@@ -3556,8 +3805,27 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
         val_loader = None
         log_and_print(f"txt 流式模式：{total_samples} 个训练窗口，不验证不早停。")
     else:
+        # P31 修正：jsonl 的实际产出样本数 != 行数（__iter__ 会跳过空行/解析失败/
+        #   无 assistant target 的行，且这些过滤在 _render_conversation 内部）。
+        #   原来按「行数」估步数会高估，导致 warmup/cosine 调度与实际不符。
+        #   这里改为：快速预扫一遍计数（只做 light 过滤，不编码），得到更接近真实的样本数。
+        _t_count0 = time.time()
+        total_lines = 0
+        _usable = 0
         with open(data_path, 'r', encoding='utf-8') as f:
-            total_samples = sum(1 for l in f if l.strip())
+            for _ln in f:
+                total_lines += 1
+                if not _ln.strip():
+                    continue
+                try:
+                    _d = json.loads(_ln)
+                    if _messages_from_record(_d):
+                        _usable += 1
+                except Exception:
+                    continue
+        total_samples = _usable if _usable > 0 else total_lines
+        _cnt_sec = time.time() - _t_count0
+        log_and_print(f"jsonl 预扫：{total_lines} 行，可用样本 {_usable} 条（耗时 {_cnt_sec:.1f}s）")
         est_batches_per_epoch = max(1, total_samples // batch_size) if total_samples > 0 else 1000
 
         val_indices = None
@@ -3606,6 +3874,14 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
     optimizer = build_optimizer(param_groups, lr, weight_decay,
                                 lambda pg, _lr, _wd: torch.optim.AdamW(pg, lr=_lr, weight_decay=_wd, betas=(0.9, ADAM_BETA2)))
 
+    # ---- P28：恢复 optimizer 动量（来自 brain.pt 的暂存状态）----
+    if SAVE_OPTIMIZER_STATE and _PENDING_BRAIN_CKPT and 'optimizer_state_dict' in _PENDING_BRAIN_CKPT:
+        try:
+            optimizer.load_state_dict(_PENDING_BRAIN_CKPT['optimizer_state_dict'])
+            log_and_print("✅ 已恢复 optimizer 状态（AdamW 动量/二阶矩）")
+        except Exception as _e:
+            log_and_print(f"⚠️ 恢复 optimizer 失败（{type(_e).__name__}: {_e}）—— 本段从零动量开始")
+
     total_updates_per_epoch = max(1, (est_batches_per_epoch + accumulation_steps - 1) // accumulation_steps)
     total_updates = total_updates_per_epoch * epochs
     warmup_steps = min(WARMUP_STEPS_PER_SEGMENT, max(1, total_updates))
@@ -3619,6 +3895,8 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
 
     optimizer_steps = 0
 
+    _last_ckpt_name = ""     # P28：记录最近一次 checkpoint（写进 resume_state）
+    _global_step = 0         # P28：跨进程累计 optimizer 步数（恢复时由断点改写）
     amp_ctx = torch.amp.autocast('cuda', dtype=torch.bfloat16) if USE_AMP and device.type == 'cuda' else contextlib.nullcontext()
 
     # 007elite：训练步 fwd+bwd 的 CUDA Graph 运行器（开关关闭/不支持/抓图失败时 enabled=False，回退 eager）
@@ -3626,10 +3904,111 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
 
     interrupted = False
     try:
-        for epoch in range(epochs):
+        # ---------------- P28/P30：断点续训准备 ----------------
+        # P30：允许从「选中的存档点的 .json」读取进度（与 brain.pt 平级，不依赖 brain 存在）
+        _resume = load_resume_state() if RESUME_ENABLED else None
+        if _resume is None and CKPT_SLOT_ENABLED and _selected_slot:
+            _sp = slot_meta_path(_selected_slot['pt'])
+            if os.path.exists(_sp):
+                try:
+                    _resume = json.load(open(_sp, encoding="utf-8"))
+                    _resume['_from_slot'] = _selected_slot['name']
+                    log_and_print(f"📂 从存档点索引读取进度: {_selected_slot['name']}")
+                except Exception as _e:
+                    log_and_print(f"⚠️ 读存档点索引失败（{_e}）")
+        _resume_epoch = 0
+        _resume_batch = 0
+        _resume_optstep = 0
+        if _resume:
+            _ok = True
+
+            # ================= P29：硬校验「权重来源」=================
+            # 断点记录了它当时的权重来自哪个文件 + 指纹。恢复前必须确认：
+            #   1) 该文件存在
+            #   2) brain.pt 的指纹 == 断点记录的指纹（否则 weight 与进度错配 = 灾难）
+            _ckpt_name = _resume.get('checkpoint') or ''
+            _want_fp = _resume.get('weights_fingerprint') or ''
+            # P30：若本次是从选中的存档点加载，则校对该存档点本身；否则退回 brain.pt
+            _loaded_pt = (_selected_slot['pt'] if (CKPT_SLOT_ENABLED and _selected_slot) else "brain.pt")
+            if RESUME_VERIFY_FINGERPRINT and _ckpt_name:
+                _brain_fp = _file_weights_fingerprint(_loaded_pt) if os.path.exists(_loaded_pt) else ""
+                if not os.path.exists(_loaded_pt):
+                    log_and_print("=" * 70)
+                    log_and_print("❌ 检测到断点，但 brain.pt 不存在！")
+                    log_and_print(f"   断点要求权重来自: {_ckpt_name}")
+                    log_and_print("   若继续训练，将从【随机初始化】开始并跳过已训的 batch —— 这会毁掉训练。")
+                    log_and_print("   请先把断点对应的文件复制为 brain.pt：")
+                    log_and_print(f"       cp \"{_ckpt_name}\" brain.pt")
+                    log_and_print("=" * 70)
+                    if RESUME_ON_MISMATCH == 'abort':
+                        raise RuntimeError("brain.pt 缺失，已中止以避免毁掉训练（RESUME_ON_MISMATCH='abort'）")
+                    _ok = False
+                elif _want_fp and _brain_fp and _brain_fp != _want_fp:
+                    log_and_print("=" * 70)
+                    log_and_print("❌ brain.pt 的权重与断点记录【不一致】！")
+                    log_and_print(f"   brain.pt     指纹: {_brain_fp[:16]}...")
+                    log_and_print(f"   断点记录指纹: {_want_fp[:16]}...")
+                    log_and_print(f"   断点要求文件: {_ckpt_name}")
+                    log_and_print("   可能原因：brain.pt 是旧版本 / 你改名了别的文件 / 断点是别的段留下的。")
+                    log_and_print("   正确做法：")
+                    log_and_print(f"       cp \"{_ckpt_name}\" brain.pt    # 恢复断点对应的权重")
+                    log_and_print("       或删除 resume_state.json 表示放弃断点")
+                    log_and_print("=" * 70)
+                    if RESUME_ON_MISMATCH == 'abort':
+                        raise RuntimeError("权重指纹不匹配，已中止（RESUME_ON_MISMATCH='abort'）")
+                    log_and_print("⚠️ RESUME_ON_MISMATCH='weights_only' ⇒ 仅恢复权重，从头跑本段")
+                    _resume = None
+
+            if _resume is None:
+                _ok = False
+            if _resume and _resume.get('data_path') and os.path.basename(_resume['data_path']) != os.path.basename(data_path):
+                log_and_print(f"⚠️ 断点属于 {_resume.get('data_path')}，与本次 {data_path} 不符 ⇒ 忽略断点")
+                _ok = False
+            if _resume and _resume.get('num_workers') is not None and int(_resume['num_workers']) != int(num_workers):
+                log_and_print(f"⚠️ num_workers 变化（断点 {_resume['num_workers']} → 本次 {num_workers}），数据顺序可能不一致，仅恢复权重")
+                _ok = _ok and True
+            if _resume.get('num_workers') is not None and int(_resume['num_workers']) != int(num_workers):
+                log_and_print(f"⚠️ num_workers 变化（断点 {_resume['num_workers']} → 本次 {num_workers}），"
+                              f"数据顺序可能不一致，仅恢复权重")
+                _ok = _ok and True   # 仍允许恢复权重，只是跳过 batch
+            if _ok:
+                _resume_epoch = int(_resume.get('epoch', 0))
+                _resume_batch = int(_resume.get('batch_idx', 0))
+                _resume_optstep = int(_resume.get('optimizer_step', 0))
+                log_and_print(f"🔁 检测到断点：epoch={_resume_epoch} batch={_resume_batch} "
+                              f"opt_step={_resume_optstep} 段={os.path.basename(str(_resume.get('data_path')))}")
+                if not RESUME_AUTO:
+                    if input("是否从断点继续？(y/n): ").strip().lower() != 'y':
+                        log_and_print("用户选择不恢复，从头开始")
+                        _resume_epoch, _resume_batch, _resume_optstep = 0, 0, 0
+            else:
+                _resume_epoch, _resume_batch, _resume_optstep = 0, 0, 0
+
+        for epoch in range(_resume_epoch, epochs):
             if hasattr(train_dataset, 'epoch'):
                 train_dataset.epoch = epoch
             model.train()
+            _skip_batches = _resume_batch if epoch == _resume_epoch else 0
+            if _skip_batches > 0:
+                log_and_print(f"🔁 跳过本段前 {_skip_batches} 个 batch（数据顺序确定性重放）")
+            _last_saved_optstep = _resume_optstep
+            # P28 修复：全局累计步（= 断点步数 + 本进程已走步数），用于 LR 与 resume_state
+            _global_step = _resume_optstep if epoch == _resume_epoch else 0
+            if _resume_optstep > 0 and epoch == _resume_epoch:
+                # 把 scheduler 对齐到断点位置，并立刻把 LR 刷到该位置的正确值
+                try:
+                    scheduler.last_epoch = _resume_optstep
+                    _lv = scheduler.get_lr()
+                    for _pg, _v in zip(optimizer.param_groups, _lv):
+                        _pg['lr'] = _v
+                    scheduler._last_lr = [pg['lr'] for pg in optimizer.param_groups]
+                    # 同步 optimizer_steps（日志用）+ _last_saved_optstep
+                    optimizer_steps = _resume_optstep
+                    log_and_print(f"🔁 对齐到断点：last_epoch={_resume_optstep}, "
+                                  f"当前 LR={optimizer.param_groups[0]['lr']:.3e}")
+                except Exception as _e:
+                    log_and_print(f"⚠️ 对齐 scheduler 失败（{_e}）")
+            step = -1     # P28：预初始化，保证 Ctrl+C 发生在第一个 batch 之前时也能安全读取
             total_loss = 0.0
             total_activity = 0.0
             optimizer.zero_grad(set_to_none=False)
@@ -3640,6 +4019,8 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
             consumed_samples = 0
 
             for step, batch in enumerate(train_loader):
+                if step < _skip_batches:
+                    continue
                 input_ids, labels, attn_mask = batch
                 if input_ids.numel() == 0:
                     continue
@@ -3673,6 +4054,26 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                     optimizer.zero_grad(set_to_none=False)
 
                     optimizer_steps += 1
+                    _global_step += 1
+                    # ---------------- P28：周期落盘断点（轻量 json）----------------
+                    if RESUME_ENABLED and (optimizer_steps - _last_saved_optstep) >= RESUME_SAVE_INTERVAL_STEPS:
+                        _last_saved_optstep = optimizer_steps
+                        try:
+                            save_resume_state({
+                                'data_path': data_path,
+                                'epoch': epoch,
+                                'batch_idx': step + 1,
+                                'optimizer_step': _global_step,
+                                'scheduler_last_epoch': int(getattr(scheduler, 'last_epoch', 0)),
+                                'lr_now': float(scheduler.get_last_lr()[0]),
+                                'num_workers': int(num_workers),
+                                'max_seq_len': int(MAX_SEQ_LEN),
+                                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                                'checkpoint': _last_ckpt_name,
+                                'weights_fingerprint': compute_weights_fingerprint(model.state_dict()),
+                            })
+                        except Exception as _e:
+                            log_and_print(f"⚠️ 写断点失败（{_e}）")
 
                 # ---- P1：按间隔清理显存缓存（只释放未使用缓存，不改数学）----
                 if EMPTY_CACHE_INTERVAL > 0 and (step + 1) % EMPTY_CACHE_INTERVAL == 0:
@@ -3795,8 +4196,35 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
                                                 break
             else:
                         log_and_print(f"Epoch {epoch+1} 无验证集，跳过验证与早停。")
-            ckpt_name = f"checkpoint_epoch{epoch+1}.pt"
-            save_checkpoint(model, epoch+1, custom_filename=ckpt_name)
+            # P30：epoch 末存档点也改用编号名
+            if CKPT_SLOT_ENABLED:
+                ckpt_name = next_slot_name() + ".pt"
+            else:
+                ckpt_name = f"checkpoint_epoch{epoch+1}.pt"
+            _last_ckpt_name = ckpt_name
+            save_checkpoint(model, epoch+1, custom_filename=ckpt_name,
+                            optimizer=optimizer, scheduler=scheduler,
+                            extra=dict(data_path=data_path, epoch=epoch, batch_idx=0,
+                                       optimizer_step=_global_step,
+                                       lr_now=float(scheduler.get_last_lr()[0]),
+                                       timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+                                       segment_done=True))
+            if RESUME_ENABLED:
+                # 段完成：清断点（本段已训完），并把该段 mark 成完成
+                save_resume_state({
+                    'data_path': data_path,
+                    'epoch': epoch,
+                    'batch_idx': 0,
+                    'optimizer_step': _global_step,
+                    'scheduler_last_epoch': int(getattr(scheduler, 'last_epoch', 0)),
+                    'lr_now': float(scheduler.get_last_lr()[0]),
+                    'num_workers': int(num_workers),
+                    'max_seq_len': int(MAX_SEQ_LEN),
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'checkpoint': ckpt_name,
+                    'weights_fingerprint': compute_weights_fingerprint(model.state_dict()),
+                    'segment_done': True,
+                })
 
             # 重置日志计数器，防止跨 epoch 累积
             step_loss_sum = 0.0
@@ -3805,7 +4233,28 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
     except KeyboardInterrupt:
         interrupted = True
         log_and_print("\n训练被用户中断 (Ctrl+C)，正在保存当前模型...")
-        save_checkpoint(model, epoch + 1, custom_filename="interrupted_model.pt")
+        _slot_name = next_slot_name() + ".pt" if CKPT_SLOT_ENABLED else "interrupted_model.pt"
+        _last_ckpt_name = _slot_name
+        save_checkpoint(model, epoch + 1, custom_filename=_slot_name,
+                        optimizer=optimizer, scheduler=scheduler,
+                        extra=dict(data_path=data_path, epoch=epoch, batch_idx=step + 1,
+                                   optimizer_step=_global_step,
+                                   lr_now=float(scheduler.get_last_lr()[0]),
+                                   timestamp=time.strftime('%Y-%m-%d %H:%M:%S')))
+        if RESUME_ENABLED:
+            save_resume_state({
+                'data_path': data_path,
+                'epoch': epoch,
+                'batch_idx': step + 1,
+                'optimizer_step': _global_step,
+                'scheduler_last_epoch': int(getattr(scheduler, 'last_epoch', 0)),
+                'lr_now': float(scheduler.get_last_lr()[0]),
+                'num_workers': int(num_workers),
+                'max_seq_len': int(MAX_SEQ_LEN),
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'checkpoint': "interrupted_model.pt",
+                'weights_fingerprint': compute_weights_fingerprint(model.state_dict()),
+            })
         log_and_print("模型已保存至 interrupted_model.pt，返回主菜单。")
         return
 
@@ -3970,9 +4419,23 @@ def ultra_iter_problems(path: str):
                 continue
             if not isinstance(answers, list):
                 answers = [answers]
-            answers = [str(answer) for answer in answers if str(answer).strip()]
+            # P35：去掉「normalize 后为空」的答案（纯标点/空白都算无效）
+            _raw_answers = [str(answer) for answer in answers if str(answer).strip()]
+            answers = []
+            for _a in _raw_answers:
+                _typ_guess = str(item.get('type', 'auto')).lower()
+                if not _typ_guess or _typ_guess == 'auto':
+                    # type 未指定时，先按 text 规整判断是否为空
+                    try:
+                        _nv = ultra_normalize_answer(_a, 'text')
+                    except Exception:
+                        _nv = _a.strip()
+                else:
+                    _nv = ultra_normalize_answer(_a, _typ_guess)
+                if _nv:
+                    answers.append(_a)
             if not answers:
-                log_and_print(f"跳过题库第 {line_no} 行：没有可用答案。")
+                log_and_print(f"跳过题库第 {line_no} 行：没有有效答案（normalize 后为空）。")
                 continue
             yield {
                 'question': question,
@@ -4049,25 +4512,61 @@ def ultra_normalize_answer(value: str, answer_type: str) -> str:
     return text.strip('。.!！?？,，;；:：')
 
 
+# P35：严格模式开关（用户要求「强制要求」「严格」）
+RL_STRICT_ANSWER_FORMAT = True   # True=必须 \boxed{} 或「答案:」标记，否则判错
+                                 # False=退回旧行为（fallback 到最后一行）
+
+
 def ultra_extract_final_answer(response: str) -> str:
+    """P35 严格模式：只接受显式答案标记，不再 fallback 到「最后一行」。
+    这样杜绝「随便输出一行恰好命中答案」的 hack。
+    """
     import re
+    if not response or not response.strip():
+        return ''
+    # 优先级 1：\boxed{...}
     boxed = re.findall(r'\\boxed\s*\{([^{}]+)\}', response)
     if boxed:
         return boxed[-1].strip()
+    # 优先级 2：「最终答案：xxx」/「答案: xxx」/「final answer: xxx」
     marked = re.findall(r'(?:最终答案|答案|final\s+answer)\s*[:：]\s*([^\r\n]+)', response,
                         flags=re.IGNORECASE)
     if marked:
         return marked[-1].strip()
+    if RL_STRICT_ANSWER_FORMAT:
+        # 严格模式：没有显式标记 ⇒ 视为「未给出答案」
+        return ''
+    # 非严格模式（旧行为）
     lines = [line.strip() for line in response.splitlines() if line.strip()]
     return lines[-1] if lines else ''
 
 
 def ultra_rule_reward(response: str, problem):
+    """P35 严格判分：
+      - 空预测 ⇒ reward=0.0（旧代码在空答案题上会误判为 1.0）
+      - 过滤掉 normalize 后为空的「答案」（纯标点/空白）
+      - 严格模式要求 boxed 或「答案:」标记
+      - 无有效答案的题 ⇒ 返回 (None, predicted)，调用方应跳过该题
+    """
     _reasoning, body = _split_reasoning(response)      # 只看正文，思考内容不参与判分
     predicted = ultra_extract_final_answer(body)
     answer_type = ultra_infer_answer_type(problem)
     predicted_normalized = ultra_normalize_answer(predicted, answer_type)
-    accepted = {ultra_normalize_answer(answer, answer_type) for answer in problem['answers']}
+
+    # ---- 去掉 normalize 后为空的答案（纯标点/空白不算有效答案）----
+    accepted = set()
+    for answer in problem['answers']:
+        nv = ultra_normalize_answer(answer, answer_type)
+        if nv:                    # 空串不进集合
+            accepted.add(nv)
+    if not accepted:
+        # 该题没有可用答案 ⇒ 无效题，返回 None 让调用方跳过
+        return None, predicted
+
+    # ---- 空预测直接判 0（修复核心漏洞）----
+    if not predicted or not predicted.strip() or not predicted_normalized:
+        return 0.0, predicted
+
     reward = 1.0 if predicted_normalized in accepted else 0.0
     return reward, predicted
 
@@ -4130,6 +4629,9 @@ def ultra_rejection_sampling(model: WaveSNN, tokenizer: FastBPE, problem_path: s
                     generated_ids, response = ultra_generate_one(model, tokenizer, prompt_ids, max_new_tokens)
                     tried += 1
                     reward, predicted = ultra_rule_reward(response, problem)
+                    if reward is None:
+                        # P36：该题没有有效答案（题库漏网），跳过
+                        continue
                     key = (problem['line_no'], response)
                     if reward > 0 and key not in seen:
                         ultra_write_sft_line(out, prompt, response, {
@@ -4180,19 +4682,58 @@ def ultra_grpo_train(model: WaveSNN, tokenizer: FastBPE, problem_path: str,
     model.to(DEVICE)
     seen_positive = set()
     total_updates = 0
-    with open(positive_output_path, 'w', encoding='utf-8') as positive_out:
-        for epoch in range(epochs):
+
+    # ---------------- P31：GRPO 断点 ----------------
+    _g_meta = os.path.splitext(checkpoint_prefix)[0] + "_grpo_progress.json"
+    _g_start_epoch = 0
+    _g_start_index = 0
+    if RESUME_ENABLED and os.path.exists(_g_meta):
+        try:
+            _st = json.load(open(_g_meta, encoding="utf-8"))
+            _g_start_epoch = int(_st.get('epoch', 0))
+            _g_start_index = int(_st.get('index', 0))
+            total_updates = int(_st.get('total_updates', 0))
+            log_and_print(f"🔁 GRPO 断点：epoch={_g_start_epoch} index={_g_start_index} updates={total_updates}")
+        except Exception as _e:
+            log_and_print(f"⚠️ 读 GRPO 断点失败（{_e}）")
+
+    def _save_g_progress(ep, idx):
+        if not RESUME_ENABLED:
+            return
+        try:
+            _m = dict(epoch=ep, index=idx, total_updates=total_updates,
+                      problem_path=problem_path,
+                      timestamp=time.strftime('%Y-%m-%d %H:%M:%S'))
+            tmp = _g_meta + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as _f:
+                json.dump(_m, _f, ensure_ascii=False, indent=1)
+                _f.flush(); os.fsync(_f.fileno())
+            os.replace(tmp, _g_meta)
+        except Exception:
+            pass
+
+    with open(positive_output_path, 'a' if _g_start_index > 0 else 'w', encoding='utf-8') as positive_out:
+        for epoch in range(_g_start_epoch, epochs):
             for index, problem in enumerate(ultra_iter_problems_shuffled(problem_path, buffer_size=10000, seed=epoch), 1):
+                if epoch == _g_start_epoch and index <= _g_start_index:
+                    continue
+                if index % 50 == 0:
+                    _save_g_progress(epoch, index)
                 prompt = ultra_make_prompt(problem)
                 prompt_ids = ultra_prompt_ids(tokenizer, prompt)
                 completions = []
                 responses = []
                 rewards = []
+                _has_invalid = False
                 model.eval()
                 with torch.no_grad():
                     for _ in range(group_size):
                         completion_ids, response = ultra_generate_one(model, tokenizer, prompt_ids, max_new_tokens)
                         reward, predicted = ultra_rule_reward(response, problem)
+                        if reward is None:
+                            # P36：无效题（无有效答案），整题跳过
+                            _has_invalid = True
+                            break
                         completions.append(completion_ids)
                         responses.append(response)
                         rewards.append(reward)
@@ -4202,6 +4743,9 @@ def ultra_grpo_train(model: WaveSNN, tokenizer: FastBPE, problem_path: str,
                                 'reward': float(reward), 'predicted': predicted, 'from': 'grpo',
                                 'line_no': problem['line_no']})
                             seen_positive.add(key)
+                if _has_invalid or not rewards:
+                    log_and_print(f"[GRPO E{epoch+1} {index}/{total_problems}] 无有效答案，跳过该题")
+                    continue
                 reward_tensor = torch.tensor(rewards, dtype=torch.float32, device=DEVICE)
                 reward_mean = reward_tensor.mean()
                 reward_std = reward_tensor.std(unbiased=False)
@@ -4235,6 +4779,12 @@ def ultra_grpo_train(model: WaveSNN, tokenizer: FastBPE, problem_path: str,
                     total_updates += 1
                 log_and_print(f"[GRPO E{epoch+1} {index}/{total_problems}] rewards={rewards} updates={total_updates}")
             ultra_save_model_only(model, f"{checkpoint_prefix}_epoch{epoch+1}.pt", epoch + 1)
+            _save_g_progress(epoch + 1, 0)
+    try:
+        if RESUME_ENABLED and os.path.exists(_g_meta):
+            os.remove(_g_meta)
+    except Exception:
+        pass
     log_and_print(f"GRPO 完成：共更新 {total_updates} 次；正确 rollout 已输出至 {positive_output_path}")
 
 
@@ -4254,15 +4804,56 @@ def ultra_rule_rl_train(model: WaveSNN, tokenizer: FastBPE, problem_path: str,
     baseline = 0.5
     total_updates = 0
     seen_positive = set()
-    with open(positive_output_path, 'w', encoding='utf-8') as positive_out:
-        for epoch in range(epochs):
+
+    # ---------------- P31：RL 断点（按 problem 索引 + 模型权重）----------------
+    _rl_meta = os.path.splitext(checkpoint_prefix)[0] + "_rl_progress.json"
+    _rl_start_epoch = 0
+    _rl_start_index = 0
+    _rl_baseline = 0.5
+    if RESUME_ENABLED and os.path.exists(_rl_meta):
+        try:
+            _st = json.load(open(_rl_meta, encoding="utf-8"))
+            _rl_start_epoch = int(_st.get('epoch', 0))
+            _rl_start_index = int(_st.get('index', 0))
+            _rl_baseline = float(_st.get('baseline', 0.5))
+            total_updates = int(_st.get('total_updates', 0))
+            log_and_print(f"🔁 RL 断点：epoch={_rl_start_epoch} index={_rl_start_index} "
+                          f"baseline={_rl_baseline:.4f} updates={total_updates}")
+            baseline = _rl_baseline
+        except Exception as _e:
+            log_and_print(f"⚠️ 读 RL 断点失败（{_e}）")
+
+    def _save_rl_progress(ep, idx):
+        if not RESUME_ENABLED:
+            return
+        try:
+            _m = dict(epoch=ep, index=idx, baseline=baseline, total_updates=total_updates,
+                      problem_path=problem_path,
+                      timestamp=time.strftime('%Y-%m-%d %H:%M:%S'))
+            tmp = _rl_meta + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as _f:
+                json.dump(_m, _f, ensure_ascii=False, indent=1)
+                _f.flush(); os.fsync(_f.fileno())
+            os.replace(tmp, _rl_meta)
+        except Exception:
+            pass
+
+    with open(positive_output_path, 'a' if _rl_start_index > 0 else 'w', encoding='utf-8') as positive_out:
+        for epoch in range(_rl_start_epoch, epochs):
             for index, problem in enumerate(ultra_iter_problems_shuffled(problem_path, buffer_size=10000, seed=epoch), 1):
+                if epoch == _rl_start_epoch and index <= _rl_start_index:
+                    continue
+                if index % 50 == 0:
+                    _save_rl_progress(epoch, index)
                 prompt = ultra_make_prompt(problem)
                 prompt_ids = ultra_prompt_ids(tokenizer, prompt)
                 model.eval()
                 with torch.no_grad():
                     completion_ids, response = ultra_generate_one(model, tokenizer, prompt_ids, max_new_tokens)
                     reward, predicted = ultra_rule_reward(response, problem)
+                if reward is None:
+                    # P36：无效题（无有效答案），跳过
+                    continue
                 advantage = reward - baseline
                 baseline = baseline_momentum * baseline + (1.0 - baseline_momentum) * reward
                 if reward > 0:
@@ -4283,6 +4874,13 @@ def ultra_rule_rl_train(model: WaveSNN, tokenizer: FastBPE, problem_path: str,
                 total_updates += 1
                 log_and_print(f"[RL E{epoch+1} {index}/{total_problems}] reward={reward:.1f} baseline={baseline:.3f} updates={total_updates}")
             ultra_save_model_only(model, f"{checkpoint_prefix}_epoch{epoch+1}.pt", epoch + 1)
+            _save_rl_progress(epoch + 1, 0)
+    # RL 完成：清理断点
+    try:
+        if RESUME_ENABLED and os.path.exists(_rl_meta):
+            os.remove(_rl_meta)
+    except Exception:
+        pass
     log_and_print(f"基础规则奖励 RL 完成：共更新 {total_updates} 次；正确 rollout 已输出至 {positive_output_path}")
 
 
@@ -4330,15 +4928,23 @@ def ultra_grpo_menu(model: WaveSNN, tokenizer: FastBPE):
                      epochs, group_size, max_new_tokens, lr, inner_steps,
                      clip_epsilon, old_policy_penalty)
 
+_PENDING_BRAIN_CKPT = None   # P28：暂存 brain.pt 的非权重部分（optimizer/scheduler），待 optimizer 建好后恢复
+
+
 def load_brain_pt_into(model: WaveSNN) -> bool:
-    """将 brain.pt 加载到模型；checkpoint 临时放到内存，写入后立即释放。返回 False 表示 brain.pt 不存在。"""
+    """加载 brain.pt 到模型；P28 起把 optimizer/scheduler 状态暂存到 _PENDING_BRAIN_CKPT。"""
+    global _PENDING_BRAIN_CKPT
     if not os.path.exists("brain.pt"):
         return False
     checkpoint = torch.load("brain.pt", map_location='cpu', weights_only=False)
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
+        _PENDING_BRAIN_CKPT = {k: v for k, v in checkpoint.items() if k != 'model_state_dict'}
+        if 'optimizer_state_dict' in checkpoint:
+            log_and_print("brain.pt 内含 optimizer 状态 ⇒ 本段将恢复动量")
     else:
         model.load_state_dict(checkpoint)
+        _PENDING_BRAIN_CKPT = None
     del checkpoint
     if DEVICE.type == 'cuda':
         torch.cuda.empty_cache()
@@ -4595,14 +5201,63 @@ def main():
     setup_model_token_ids(model, tokenizer)
 
     model_loaded = False
-    if os.path.exists("brain.pt"):
-        log_and_print("检测到 brain.pt，训练或对话时按需加载（避免启动即占用冗余显存）。")
-    else:
-        log_and_print("未找到 brain.pt，使用随机初始化模型。")
+    _current_slot = {"name": None}     # P30：当前已加载的存档点
 
-    def ensure_model_loaded() -> bool:
-        """首次用到模型时，若 brain.pt 存在则加载（checkpoint 临时放内存，写入后立即释放）。"""
+    # ---- P30：存档点列表（启动时探测，不加载大文件）----
+    if CKPT_SLOT_ENABLED:
+        _slots0 = list_slots()
+        if _slots0:
+            log_and_print(f"检测到 {len(_slots0)} 个存档点（进入训练/对话时可选）")
+            for _s in _slots0:
+                _seg = os.path.basename(str(_s['seg'])) if _s['seg'] else "-"
+                _stp = f"{_s['step']:,}" if _s['step'] else "-"
+                log_and_print(f"    {_s['name']:<14} step={_stp:<10} seg={_seg}")
+        else:
+            log_and_print("未检测到存档点（首次训练将从随机初始化开始）")
+    else:
+        if os.path.exists("brain.pt"):
+            log_and_print("检测到 brain.pt（旧模式：按需加载）")
+
+    def ensure_model_loaded(force_slot=None) -> bool:
+        """P30：确保模型已加载。
+        - CKPT_SLOT_ENABLED=True 时：若指定 force_slot 或当前未加载，则弹列表让用户选
+        - 只加载一次，不重复加载（消除「自动 brain + 手动选断点」的双份问题）
+        """
         nonlocal model_loaded
+        if model_loaded and force_slot is None:
+            return True
+
+        # ---- P30 新模式：选存档点 ----
+        if CKPT_SLOT_ENABLED:
+            sel = force_slot
+            if sel is None:
+                if CKPT_SELECT_ON_USE:
+                    sel = pick_slot("本次操作")
+                    if sel == "CANCEL":
+                        return False
+                else:
+                    _ss = list_slots()
+                    sel = _ss[-1] if _ss else None
+            if sel is None:
+                # 从头开始：随机初始化（不加载）
+                log_and_print("使用随机初始化模型（从头开始）")
+                model_loaded = True
+                _current_slot["name"] = None
+                return True
+            # 真正加载选中的存档点
+            try:
+                _load_slot_into(model, sel['pt'])
+                setup_model_token_ids(model, tokenizer)
+            except Exception as e:
+                log_and_print(f"❌ 加载存档点 {sel['name']} 失败: {e}")
+                close_log_file()
+                raise SystemExit(1)
+            model_loaded = True
+            _current_slot["name"] = sel['name']
+            _PENDING_BRAIN_CKPT = None   # 由 _load_slot_into 内部处理暂存
+            return True
+
+        # ---- 旧模式：brain.pt ----
         if model_loaded:
             return True
         if not os.path.exists("brain.pt"):
@@ -4616,6 +5271,35 @@ def main():
             raise SystemExit(1)
         model_loaded = True
         log_and_print("已加载 brain.pt 模型权重。")
+        return True
+
+    # ---------- P31：RL 环节的存档点加载器 ----------
+    _rl_ready = [False]
+
+    def _load_for_rl():
+        """为 RL 环节加载模型（走 pick_slot，与训练/对话一致）。返回是否就绪。"""
+        _rl_ready[0] = False
+        if not CKPT_SLOT_ENABLED:
+            if not ensure_model_loaded():
+                log_and_print("⚠️ 未找到 brain.pt，RL 需要已训练模型")
+                return False
+            _rl_ready[0] = True
+            return True
+        _sel = pick_slot("RL 训练")
+        if _sel == "CANCEL":
+            return False
+        if _sel is None:
+            log_and_print("⚠️ RL 需要已训练模型，不能从随机初始化开始")
+            return False
+        try:
+            _load_slot_into(model, _sel['pt'])
+            setup_model_token_ids(model, tokenizer)
+            model_loaded = True
+            _current_slot["name"] = _sel['name']
+        except Exception as _e:
+            log_and_print(f"❌ 加载失败: {_e}")
+            return False
+        _rl_ready[0] = True
         return True
 
     while True:
@@ -4637,16 +5321,61 @@ def main():
             data_path, file_ext = select_training_file()
             if data_path is None:
                 continue
-            if not ensure_model_loaded():
-                log_and_print("未找到 brain.pt，使用随机初始化模型从头训练。")
+            # ---------- P30：训练前选存档点 ----------
+            _selected_slot = None
+            if CKPT_SLOT_ENABLED and CKPT_SELECT_ON_USE:
+                _selected_slot = pick_slot("训练起点")
+                if _selected_slot == "CANCEL":
+                    continue
+                if _selected_slot is not None:
+                    try:
+                        _load_slot_into(model, _selected_slot['pt'])
+                        setup_model_token_ids(model, tokenizer)
+                        model_loaded = True
+                        _current_slot["name"] = _selected_slot['name']
+                    except Exception as _e:
+                        log_and_print(f"❌ 加载存档点失败: {_e}")
+                        continue
+                else:
+                    log_and_print("从头开始：重建随机初始化模型")
+                    model = WaveSNN(vocab_size=tokenizer.vocab_size, hidden_size=HIDDEN_SIZE,
+                                    num_layers=NUM_LAYERS, pad_token_id=tokenizer.pad_token_id,
+                                    use_residual=USE_RESIDUAL, disable_coupling=DISABLE_COUPLING,
+                                    freeze_seed=SEED_FREEZE, freeze_layers=FREEZE_LAYERS,
+                                    freeze_embedding=FREEZE_EMBEDDING,
+                                    seed_embedding=SEED_EMBEDDING)
+                    setup_model_token_ids(model, tokenizer)
+                    model_loaded = True
+                    _current_slot["name"] = None
+                    _PENDING_BRAIN_CKPT = None
+            else:
+                if not ensure_model_loaded():
+                    log_and_print("未找到 brain.pt，使用随机初始化模型从头训练。")
             if input("开始训练？(y/n): ").lower() == 'y':
                 train_from_scratch(model, tokenizer, data_path,
                                    BATCH_SIZE, EPOCHS, LEARNING_RATE, WEIGHT_DECAY,
                                    GRAD_CLIP_NORM, LOG_INTERVAL,
                                    accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-                                   file_type=file_ext)
+                                   file_type=file_ext,
+                                   _selected_slot=_selected_slot)
         elif choice == '2':
-            ensure_model_loaded()
+            if CKPT_SLOT_ENABLED:
+                _sel2 = pick_slot("对话")
+                if _sel2 == "CANCEL":
+                    continue
+                if _sel2 is None:
+                    log_and_print("⚠️ 对话需要已训练的模型，已取消")
+                    continue
+                try:
+                    _load_slot_into(model, _sel2['pt'])
+                    setup_model_token_ids(model, tokenizer)
+                    model_loaded = True
+                    _current_slot["name"] = _sel2['name']
+                except Exception as _e:
+                    log_and_print(f"❌ 加载失败: {_e}")
+                    continue
+            else:
+                ensure_model_loaded()
             chat_mode = input("对话格式 (jsonl) 还是纯文本续写 (txt)？[jsonl]: ").strip().lower()
             if chat_mode not in ("jsonl", "txt"):
                 chat_mode = "jsonl"
@@ -4693,14 +5422,17 @@ def main():
             log_and_print("架构：对角复数波神经元 + 并行前缀扫描 + 层间RMSNorm + 残差")
             log_and_print(f"读取方式：全局摘要器（SUMMARY_TYPE='{SUMMARY_TYPE}'，写入 cat([I_gated_norm, g])，读取 input_mod_linear(I)+global_mod_linear(g)）")
         elif choice == '7':
-            ensure_model_loaded()
-            ultra_rejection_sampling_menu(model, tokenizer)
+            _load_for_rl()
+            if _rl_ready:
+                ultra_rejection_sampling_menu(model, tokenizer)
         elif choice == '8':
-            ensure_model_loaded()
-            ultra_rule_rl_menu(model, tokenizer)
+            _load_for_rl()
+            if _rl_ready:
+                ultra_rule_rl_menu(model, tokenizer)
         elif choice == '9':
-            ensure_model_loaded()
-            ultra_grpo_menu(model, tokenizer)
+            _load_for_rl()
+            if _rl_ready:
+                ultra_grpo_menu(model, tokenizer)
         elif choice == '11':
             p4_segment_dataset_menu()
         elif choice == '10':

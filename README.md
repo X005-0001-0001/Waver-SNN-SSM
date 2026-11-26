@@ -9,9 +9,9 @@
 **A complex-valued SSM turned "complex-free": every complex operator is replaced by a real 2×2 block isomorphism.**
 **把复值 SSM 的复数算子完整替换为实值 2×2 块同构 —— 代数层面实现"无复数"的复数 SSM。**
 
-> **当前最新 / Latest：`9.3.0`（2026-10-21）** —— **0012 训练步 CUDA Graph：支持 batch>1 + 修复 stale capture stream**。缓存 key 由 `bT` 改为 `(B, bT)`、缓冲按 `(B, bT)` 分配，整批 pad 到同一桶长（pad 行 `label=-100` / `attn=0`，不参与 loss、不越过 mask）；`torch.cuda.graph(g, stream=side)` 让捕获流与预热流一致，结构性消除 torch ≥ 2.13 的 stale capture stream 中止；新增 `TRAIN_GRAPH_MAX_TOKENS=32768` 显存护栏与「先淘汰、再捕获」；MoE 因动态 `nonzero` 变长明确不抓图。**不改模型结构 / 数学语义 / 训练配置。**
+> **当前最新 / Latest：`9.4.0`（2026-11-27）** —— **可中断续训 + 多存档点系统 + RL 判分严格化**。①**断点续训**：原子写入的轻量断点文件（`resume_state.json`，几 KB）记录 `epoch/batch_idx/optimizer_step/scheduler_last_epoch/lr_now`，恢复时利用固定种子（`Random(42+epoch*1000)`）的确定性窗口顺序精确跳过已消费 batch，并对齐 `scheduler.last_epoch` 立即刷新 LR（不跳回峰值）；配合可选保存 optimizer/scheduler 状态实现动量延续。②**多存档点**：编号存档点 `ckpt_000N.pt` + 同名 `.json` 索引，`brain.pt` 降为列表中普通一条、不再隐式自动加载；训练 / 对话 / RL 统一「先选后载」，可用权重指纹（`model_state_dict` 的 sha256）校验权重与进度不错配。③**跨段连续退火**：`WarmupCosineScheduler` 新增 `global_start/global_total/start_factor`，把「每段独立 cosine」改为跨段单一长 cosine（实测段间 LR 差 <1e-7）；并以 `LR_RATIO_ETA_MIN` 比例替代原绝对下限折算（原实现在低峰值 LR 时末/峰比高达 0.667，末期几乎不衰减）。④**RL 判分严格化**：修复 4 处可 hack 的判定缺陷（空预测在空/纯标点答案题上被判 1.0；无标记时 fallback 到「最后一行」；`number` 取最后数字；`choice` 取最后孤立字母），改为必须 `\boxed{}` 或「答案:」显式标记，空预测判 0，无有效答案的题跳过。⑤**jsonl 步数估算**：改用可用样本数（预扫）而非行数，修正 warmup / cosine 调度错位。**不改模型结构 / 数学语义 / 数值路径；三个子系统均可开关独立关闭。**
 
-> 上一版 / Previous：`9.2.3`（2026-10-16）—— **0012 系列：闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复**。`_closed_form_expm_2x2` 原先把 `e^μ`（δ 大时 `Re(μ)=−δν<0` ⇒ **下溢为 0**）与 `cosh(√s²)`（δ 大时 **上溢为 inf**）**拆开相乘** ⇒ `0 × inf = NaN`；本版改为**按特征值直接指数化** `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），数学恒等、无阈值、无回退分支。**只改该函数的数值实现，不改模型结构 / 数学语义 / 训练配置。**
+> 上一版 / Previous：`9.3.0`（2026-10-21）—— **0012 训练步 CUDA Graph：支持 batch>1 + 修复 stale capture stream**。缓存 key 由 `bT` 改为 `(B, bT)`、缓冲按 `(B, bT)` 分配，整批 pad 到同一桶长（pad 行 `label=-100` / `attn=0`，不参与 loss、不越过 mask）；`torch.cuda.graph(g, stream=side)` 让捕获流与预热流一致，结构性消除 torch ≥ 2.13 的 stale capture stream 中止；新增 `TRAIN_GRAPH_MAX_TOKENS=32768` 显存护栏与「先淘汰、再捕获」；MoE 因动态 `nonzero` 变长明确不抓图。**不改模型结构 / 数学语义 / 训练配置。**
 
 **语言 / Language：** [中文文档](#中文文档) · [English Documentation](#english-documentation)
 
@@ -62,7 +62,7 @@ Waver-SNN-SSM/
 ├── v6/          # 闭式矩阵指数 + 批量分词（312006elite / 312506elite）
 ├── v7/          # 训练步 CUDA Graph + 8-bit AdamW + θ 结构性上界 / δ 下限（312007elite / 312008elite / 312017elite / 312507elite / 3125008elite / 3125017elite）
 ├── v8/          # 遗忘平衡注入 · 峰值增益结构性有界（312009elite / 3125009elite）+ Linux 单卡加速（312009elitelinux / 3125009elitelinux）+ 初始化修复（8.1.1）
-├── v9/          # 0010 多 token 预测（MTP）+ 0011 残差 LayerScale + 0012 深度预算归一化（3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux / 3120011elite / 31250011elite / 3120011elitelinux / 31250011elitelinux / 3120012elite / 31250012elite / 3120012elitelinux / 31250012elitelinux）
+├── v9/          # 0010 MTP + 0011 残差 LayerScale + 0012 深度预算归一化 + 9.4.0 可中断续训/多存档点/RL 判分严格化（3120010elite / 31250010elite / 3120010elitelinux / 31250010elitelinux / 3120011elite / 31250011elite / 3120011elitelinux / 31250011elitelinux / 3120012elite / 31250012elite / 3120012elitelinux / 31250012elitelinux）
 ├── compare/     # 对照实验：round3 全套图 + v6 验证报告 + 看板工具
 ├── count_tokens.py / plot_training.py / plot_watch.py / overview_viewer.html
 ├── tokenizer_incremental.bin / tokenizer_incremental_tokenizer.json
@@ -103,6 +103,32 @@ Waver-SNN-SSM/
 | 9.2.2 | 2026-10-15 | 0012 样本长度统计收尾修复：补齐两处同类漏算——① `_truncate_pairs` 补计 assistant 的 `reasoning_content`（CoT）；② 菜单11 与 `_truncate_pairs` 两处均补计 assistant 段拼接的 `tool_calls`（复用现成 `_render_tool_calls`、不受 `TRAIN_ON_REASONING` 门控）；只补全长度估算遗漏的训练段成分，不改模型结构 / 数学路径 / 训练配置 / 渲染器 |
 | 9.2.3 | 2026-10-16 | 0012 闭式 2×2 矩阵指数 fp32 溢出 / NaN 修复：原实现把 `e^μ`（δ 大时下溢为 0）与 `cosh(√s²)`（δ 大时上溢为 inf）拆开相乘 ⇒ `0 × inf = NaN`；改为按特征值直接指数化 `e^{λ±}=e^{μ±√s²}`（`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` 恒有限），`f=(e^{λ+}−e^{λ-})/(2√s²)`、`g=(e^{λ+}+e^{λ-})/2`，数学恒等；`CF_EXPM_MIN_ABS_S2` 1e-6→1.0（级数/闭式的数学交接点）；只改 `_closed_form_expm_2x2` 的数值实现，不改模型结构 / 数学语义 / 训练配置 |
 | **9.3.0** | **2026-10-21** | **0012 训练步 CUDA Graph 支持 batch>1 + stale capture stream 修复：缓存 key 改为 `(B, bT)`、缓冲按 `(B, bT)` 分配，整批 pad 到同一桶长（pad 行 `label=-100` / `attn=0`，不参与 loss、不越过 mask）；`torch.cuda.graph(g, stream=side)` 让捕获流=预热流，结构性消除 torch ≥ 2.13 的 stale capture stream 中止；新增 `TRAIN_GRAPH_MAX_TOKENS=32768` 显存护栏与「先淘汰、再捕获」；MoE 因动态 `nonzero` 变长明确不抓图；不改模型结构 / 数学语义 / 训练配置** |
+| **9.4.0** | **2026-11-27** | **可中断续训 + 多存档点系统 + RL 判分严格化：①断点文件 `resume_state.json`（原子写）+ 利用固定种子确定性窗口顺序精确跳过已消费 batch，恢复时对齐 `scheduler.last_epoch` 并即时刷新 LR（不跳回峰值）；②编号存档点 `ckpt_000N.pt` + 同名 `.json` 索引，`brain.pt` 降为普通一条不再隐式自动加载，训练/对话/RL 统一「先选后载」，以权重 sha256 指纹校验不错配；③`WarmupCosineScheduler` 新增 `global_start/global_total/start_factor` 实现跨段单一长 cosine（段间 LR 差 <1e-7），并以 `LR_RATIO_ETA_MIN` 比例替代绝对下限折算；④RL 判分修复 4 处可 hack 缺陷（空预测/最后一行 fallback/取最后数字/取最后孤立字母），改为必须 `\boxed{}` 或「答案:」显式标记、空预测判 0、无有效答案题跳过；⑤jsonl 步数改用可用样本数预扫而非行数。**不改模型结构 / 数学语义 / 数值路径；子系统均可开关独立关闭。** |
+
+## 🚀 9.4.0 核心变更
+
+> 定位：**可中断续训 + 多存档点系统 + RL 判分严格化**（**只改训练编排 / 检查点 IO / RL 奖励判定，不改模型结构 / 数学语义 / 数值路径**；子系统均可开关独立关闭，关闭后与 9.3.0 行为一致）。
+
+- **断点续训**：轻量断点文件 `resume_state.json`（几 KB，`写 .tmp → fsync → os.replace` 原子落盘，断电不损坏）记录 `epoch / batch_idx / optimizer_step / scheduler_last_epoch / lr_now / num_workers`。恢复时利用固定种子（`random.Random(42 + epoch*1000)`）的确定性窗口顺序精确跳过已消费 batch，无需重放数据、无需序列化 RNG；并**对齐 `scheduler.last_epoch` 后立即刷新 LR**，避免 LR 跳回峰值（首版实现的缺陷）。可选保存 optimizer / scheduler 状态以实现动量延续。
+- **多存档点**：编号存档点 `ckpt_000N.pt` + 同名轻量 `.json` 索引（段名 / 步数 / LR / 时间 / 指纹）。`brain.pt` 降为列表中普通一条、**不再隐式自动加载**；菜单 1（训练）/ 2（对话）/ 7-9（RL）统一「先选后载」，消除「自动 brain + 手动选断点」的双份加载。存档点**自包含**、不依赖 `brain.pt` 存在，从零训练同样可存可恢复；`CKPT_KEEP_ALL` 保留全部历史，可回到任意较早存档点。
+- **权重指纹校验**：对 `model_state_dict` 按 key 排序取 sha256，校验「恢复时用的权重 == 断点时的权重」；不匹配则中止，避免「错权重 + 跳过已训 batch」这类灾难。
+- **跨段连续退火**：`WarmupCosineScheduler` 新增 `global_start / global_total / start_factor`，把「每段独立 cosine」改为跨段单一长 cosine，段间 LR 连续不跳变（实测差 <1e-7）。新增 `LR_RATIO_ETA_MIN`（末/峰比例，默认 0.1）替代原绝对下限折算 —— 原实现 `COSINE_ETA_MIN / LEARNING_RATE` 导致峰值越低末/峰比越高（1e-4 时 0.10，1.5e-5 时 0.667），末期几乎不衰减。
+- **RL / GRPO 断点**：`ultra_rule_rl_train` / `ultra_grpo_train` 按 `epoch + index` 每 50 题落盘进度，恢复时跳过已处理题目；滑动基线一并恢复，避免前期波动。
+- **RL 判分严格化（安全修复）**：原 `ultra_rule_reward` 存在 4 处可被策略 hack 的判定缺陷 —— ①空预测在「答案 normalize 后为空/纯标点」的题上被判 **reward=1.0**；②无显式标记时 fallback 到「最后一行」，末尾随便输出数字/字母即可命中；③`number` 取「最后一个数字」；④`choice` 取「最后一个孤立字母」。改为严格模式：必须 `\boxed{}` 或「答案: / final answer:」显式标记，否则视为未作答；空预测判 0；题库加载与判分两处都剔除「normalize 后为空」的答案，无有效答案题返回 `None` 并由三个调用点安全跳过。
+- **jsonl 步数估算**：原用「行数 // batch_size」估算 `est_batches_per_epoch`，但 `StreamingJSONLDataset.__iter__` 会跳过空行 / 解析失败 / 无 assistant target 的记录。改为预扫统计可用样本数，使 warmup / cosine 调度与实际训练量一致。
+
+### 变更范围
+- ultra3：**12 个** 0012 文件（`210 / 212 / 2125 / 310 / 312 / 3125` 的 elite 与 elitelinux）。
+- 旗舰版：`d:\旗舰版\0.85B1\3120012elitelinux.py`（全部改动，并调 `LEARNING_RATE 1.5e-5 → 3.0e-5`、`WARMUP_STEPS_PER_SEGMENT 50 → 200`、`RESUME_SAVE_INTERVAL_STEPS 200 → 500`）。
+- release 仓：`v9/` 的 4 个 312 文件。
+
+### 静态与功能校验（实测）
+- ✅ 13 个文件 `ast.parse` + `py_compile` 全通过；BOM 与换行逐字节保持（11 个 1×BOM + LF；`2120012elite.py` 无 BOM + LF）。
+- ✅ CPU / 极小模型（H=32 / L=2）功能实测：断点中断 → 重启 → 续训跑通（`batch_idx` / `optimizer_step` 连续累加、LR 不跳回）；多存档点产生 / 保留 / 任选其一加载跑通；6 个 hack 用例全部拦截、5 个正常用例全部正确。
+- ⚠️ **未端到端实测**：真实配置（H=512 / L=15、GPU、`bnb.optim.AdamW8bit`）下未跑；**8-bit 优化器 `state_dict` 的保存 / 恢复未验证**（代码有 `try/except` 兜底，失败则仅恢复权重并告警）。
+- ⚠️ **行为变更**：严格判分要求模型输出 `\boxed{}` / 「答案:」格式；若既有权重未学过该格式，RL 初期 reward 可能长期为 0（预期行为，非缺陷）。
+
+---
 
 ## 🚀 9.3.0 核心变更
 
@@ -554,6 +580,32 @@ Waver-SNN-SSM/
 | 9.2.2 | 2026-10-15 | 0012 sample-length accounting follow-up: closes two same-class omissions — ① `_truncate_pairs` now counts the assistant's `reasoning_content` (CoT); ② both menu 11 and `_truncate_pairs` now count the `tool_calls` spliced into the assistant span (reusing the existing `_render_tool_calls`, not gated by `TRAIN_ON_REASONING`); only fills in the omitted training-span components of the length estimate — no change to architecture / math / training config / renderer |
 | 9.2.3 | 2026-10-16 | 0012 closed-form 2×2 matrix-exponential fp32 overflow / NaN fix: the old implementation multiplied `e^μ` (underflows to 0 for large δ) by `cosh(√s²)` (overflows to inf for large δ) ⇒ `0 × inf = NaN`; now exponentiated directly by eigenvalue `e^{λ±}=e^{μ±√s²}` (`Re(λ±)=−δν<0` ⇒ `|e^{λ±}|<1` always finite), `f=(e^{λ+}−e^{λ-})/(2√s²)`, `g=(e^{λ+}+e^{λ-})/2`, mathematically identical; `CF_EXPM_MIN_ABS_S2` 1e-6→1.0 (the analytic series/closed-form handoff); only the numeric implementation of `_closed_form_expm_2x2` is changed — no change to architecture / math semantics / training config |
 | **9.3.0** | **2026-10-21** | **0012 training-step CUDA Graph now supports batch>1 + stale capture stream fix: the cache key becomes `(B, bT)` and the input/label/mask buffers are allocated as `(B, bT)`; the whole batch is padded to one bucket length (pad rows use `label=-100` / `attn=0`, so they neither contribute to the loss nor cross the attention mask); `torch.cuda.graph(g, stream=side)` makes the capture stream equal to the warmup stream, structurally eliminating the torch ≥ 2.13 stale-capture-stream abort; new `TRAIN_GRAPH_MAX_TOKENS=32768` memory guard plus "evict before capture"; MoE is explicitly not captured because of its dynamic `nonzero` lengths; no change to architecture / math semantics / training config** |
+| **9.4.0** | **2026-11-27** | **Resumable training + multi-slot checkpoints + strict RL scoring**: ①atomic lightweight resume file (`resume_state.json`) recording `epoch / batch_idx / optimizer_step / scheduler_last_epoch / lr_now`, with exact batch skipping based on the deterministic window order produced by the fixed seed (`random.Random(42 + epoch*1000)`), and `scheduler.last_epoch` realignment + immediate LR refresh so LR cannot snap back to peak; ②numbered checkpoint slots `ckpt_000N.pt` + sibling `.json` index, `brain.pt` demoted to an ordinary entry and no longer implicitly auto-loaded, training/chat/RL all go through select-then-load, with a sha256 weight fingerprint guarding against weight/progress mismatch; ③`WarmupCosineScheduler` gains `global_start / global_total / start_factor` for a single cross-segment cosine (measured inter-segment LR gap <1e-7), plus `LR_RATIO_ETA_MIN` ratio replacing the old absolute-floor conversion; ④RL reward hardened against 4 exploitable flaws (empty prediction scored 1.0 on empty/punctuation-only answers; fallback to the last line; taking the last number; taking the last isolated letter) — explicit `\boxed{}` or `answer:` marker now required, empty prediction scores 0, problems without a valid answer are skipped; ⑤jsonl batch estimation now pre-scans usable sample count instead of raw line count. **Model structure / math semantics / numerical path unchanged; every subsystem can be switched off independently.** |
+
+## 🚀 What's New in 9.4.0
+
+> Positioning: **resumable training + multi-slot checkpoints + strict RL scoring** (**training orchestration / checkpoint IO / RL reward judgement only — model structure, math semantics and numerical path unchanged**; every subsystem can be switched off independently, and with all switches off the behaviour equals 9.3.0).
+
+- **Resumable training**: a lightweight `resume_state.json` (a few KB; written atomically via `write .tmp → fsync → os.replace`, so a power cut cannot corrupt it) records `epoch / batch_idx / optimizer_step / scheduler_last_epoch / lr_now / num_workers`. On resume, the already-consumed batches are skipped exactly by exploiting the **deterministic** window order produced by the fixed seed (`random.Random(42 + epoch*1000)`) — no data replay and no RNG serialization needed. `scheduler.last_epoch` is realigned and LR is refreshed immediately so it cannot snap back to the peak (a defect of the first implementation). Optionally the optimizer / scheduler state is stored to carry momentum across the break.
+- **Multi-slot checkpoints**: numbered slots `ckpt_000N.pt` plus a sibling lightweight `.json` index (segment / step / LR / time / fingerprint). `brain.pt` is demoted to an ordinary entry in that list and is **no longer implicitly auto-loaded**; menu 1 (train) / 2 (chat) / 7-9 (RL) all go through select-then-load, removing the "auto brain + manually picked checkpoint" double load. Slots are **self-contained** and do not require `brain.pt` to exist, so training from scratch can checkpoint and resume too; `CKPT_KEEP_ALL` keeps every historical slot so you can roll back to any earlier one.
+- **Weight fingerprint guard**: a sha256 over `model_state_dict` (keys sorted) verifies that "the weights used for the resume == the weights recorded by the breakpoint"; a mismatch aborts instead of silently pairing the wrong weights with a skipped-batch offset.
+- **Cross-segment continuous annealing**: `WarmupCosineScheduler` gains `global_start / global_total / start_factor`, turning "one cosine per segment" into a single cross-segment cosine with no inter-segment jump (measured gap <1e-7). `LR_RATIO_ETA_MIN` (end/peak ratio, default 0.1) replaces the old absolute-floor conversion — the old `COSINE_ETA_MIN / LEARNING_RATE` made the end/peak ratio grow as the peak fell (0.10 at 1e-4 vs 0.667 at 1.5e-5, i.e. almost no annealing at the end).
+- **RL / GRPO resumption**: `ultra_rule_rl_train` / `ultra_grpo_train` now persist progress by `epoch + index` every 50 problems and skip already-processed ones on resume; the moving baseline is restored as well to avoid early fluctuation.
+- **Strict RL scoring (security fix)**: the old `ultra_rule_reward` had 4 exploitable judging flaws — ①an empty prediction scored **reward=1.0** on problems whose normalised answer is empty / punctuation-only; ②without an explicit marker it fell back to "the last line", so emitting any trailing number or letter could hit; ③`number` took the last number found; ④`choice` took the last isolated letter. Strict mode now requires an explicit `\boxed{}` or "answer: / final answer:" marker (otherwise treated as unanswered), an empty prediction scores 0, and answers that normalise to empty are dropped both at corpus load and at scoring time; problems without a valid answer return `None` and are skipped safely by all three call sites.
+- **jsonl step estimation**: `est_batches_per_epoch` used to be "line count // batch_size", but `StreamingJSONLDataset.__iter__` skips blank lines, parse failures and records without an assistant target. A pre-scan of the usable sample count now drives the warmup / cosine schedule so it matches the real training volume.
+
+### Scope
+- ultra3: the **12** 0012 files (`210 / 212 / 2125 / 310 / 312 / 3125`, elite and elitelinux).
+- Flagship: `d:\旗舰版\0.85B1\3120012elitelinux.py` (all changes, plus `LEARNING_RATE 1.5e-5 → 3.0e-5`, `WARMUP_STEPS_PER_SEGMENT 50 → 200`, `RESUME_SAVE_INTERVAL_STEPS 200 → 500`).
+- Release repo: the 4 312 files under `v9/`.
+
+### Verification (measured)
+- ✅ All 13 files pass `ast.parse` + `py_compile`; BOM and line endings byte-identical (11 files 1×BOM + LF; `2120012elite.py` no BOM + LF).
+- ✅ Functional test on CPU / tiny model (H=32 / L=2): interrupt → restart → resume works (`batch_idx` / `optimizer_step` accumulate continuously, LR does not snap back); multi-slot creation / retention / loading an earlier slot all work; 6 exploit cases blocked and 5 normal cases still correct.
+- ⚠️ **Not end-to-end tested** at the real configuration (H=512 / L=15, GPU, `bnb.optim.AdamW8bit`); **saving / restoring the 8-bit optimizer `state_dict` is unverified** (guarded by `try/except` — on failure only the weights are restored, with a warning).
+- ⚠️ **Behaviour change**: strict scoring requires the `\boxed{}` / "answer:" format; if existing weights never learned it, the early RL reward may stay at 0 (expected, not a defect).
+
+---
 
 ## 🚀 What's New in 9.3.0
 
@@ -915,5 +967,5 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 Copyright © 2026 Naiqi Zeng. All rights reserved.
 The first public release date of this code and its documentation is locked by Zenodo DOI 10.5281/zenodo.22309186. Any unauthorized plagiarism, rewording or citation without attribution is considered copyright infringement.
 
-Version: 9.3.0
-Last Updated: 2026-10-21
+Version: 9.4.0
+Last Updated: 2026-11-27

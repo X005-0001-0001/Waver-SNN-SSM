@@ -6,6 +6,67 @@
 
 ---
 
+## 9.4.0 — 2026-11-27
+
+> 定位：**可中断续训 + 多存档点系统 + RL 判分严格化**（**只改训练编排 / 检查点 IO / RL 奖励判定，不改模型结构 / 数学语义 / 数值路径**）。三个子系统均可通过开关独立关闭；关闭时与 9.3.0 行为一致。
+
+### 新增
+
+**1. 可中断续训（断点恢复）**
+- `save_resume_state` / `load_resume_state` / `clear_resume_state`：轻量断点文件（`resume_state.json`，几 KB），采用「写 `.tmp` → `flush` → `fsync` → `os.replace`」原子落盘，断电不会写坏。
+- 记录 `data_path / epoch / batch_idx / optimizer_step / scheduler_last_epoch / lr_now / num_workers`。
+- 恢复时**跳过已消费 batch**：`TextFileDataset` 的窗口顺序由 `random.Random(42 + epoch*1000)` 固定种子决定，故同段每次产出顺序完全可复现，只需一个整数即可精确复位。
+- 恢复后**对齐 `scheduler.last_epoch` 并立即刷新 LR**，避免 LR 跳回峰值（这是首版实现的缺陷，本版已修）。
+- 开关：`RESUME_ENABLED`、`RESUME_SAVE_INTERVAL_STEPS`、`RESUME_AUTO`。
+
+**2. 多存档点系统（Slot）**
+- `list_slots` / `pick_slot` / `next_slot_name` / `write_slot_meta` / `_load_slot_into`：编号存档点 `ckpt_0001.pt` + 同名 `.json` 轻量索引（段名 / 步数 / LR / 时间 / 指纹）。
+- **存档点与 `brain.pt` 平级**：`brain.pt` 只是列表中的一条，不再隐式自动加载。菜单 1（训练）/ 2（对话）/ 7-9（RL）统一走「先选存档点、后加载」，消除「自动 brain + 手动选断点」的双份加载。
+- **不依赖 `brain.pt` 存在**：从零训练同样可存 / 可恢复。
+- **保留全部历史存档点**（`CKPT_KEEP_ALL`），可回到任意较早存档点。
+- 权重指纹（`compute_weights_fingerprint`，对 `model_state_dict` 按 key 排序取 sha256）用于校验「恢复时用的权重 == 断点时的权重」；不匹配则中止，避免「错权重 + 跳过已训 batch」的灾难。
+- 开关：`CKPT_SLOT_ENABLED`、`CKPT_META_ENABLED`、`CKPT_KEEP_ALL`、`CKPT_SELECT_ON_USE`、`RESUME_VERIFY_FINGERPRINT`、`RESUME_ON_MISMATCH`。
+
+**3. 跨段连续退火 + 学习率比例**
+- `WarmupCosineScheduler` 扩展 `global_start` / `global_total` / `start_factor`：把「每段独立 cosine」改为「跨段单一长 cosine」，段间 LR 连续不跳变（实测差 <1e-7）。
+- 新增 `LR_RATIO_ETA_MIN`（末/峰比例，默认 0.1）替代原先的绝对下限折算。**修复**：原实现用 `COSINE_ETA_MIN / LEARNING_RATE` 折算，导致峰值 LR 越低、末/峰比越高（1e-4 时 0.10，1.5e-5 时 0.667，末期几乎不衰减）。
+- 开关：`CROSS_SEGMENT_COSINE`、`LR_RATIO_ETA_MIN_ENABLED`、`LR_RATIO_ETA_MIN`。
+
+**4. RL / GRPO 断点**
+- `ultra_rule_rl_train` / `ultra_grpo_train` 新增按 `epoch + index` 的进度文件（每 50 题落盘），恢复时跳过已处理题目；`baseline` 滑动基线一并恢复，避免前期波动。
+- 开关复用 `RESUME_ENABLED`。
+
+### 修复
+
+- **RL/GRPO 判分漏洞（安全）**：原 `ultra_rule_reward` 存在 4 处可被策略 hack 的判定缺陷（均已实测复现）：
+  1. 空预测在「答案 normalize 后为空/纯标点」的题上被判 **reward=1.0**；
+  2. 无显式答案标记时 fallback 到「最后一行」，模型末尾随便输出一个数字/字母即可命中；
+  3. `number` 类型取「最后一个数字」，与解题无关；
+  4. `choice` 类型取「最后一个孤立字母」，同上。
+
+  修复为**严格模式**（`RL_STRICT_ANSWER_FORMAT=True`）：
+  - 必须显式 `\boxed{}` 或「答案: / final answer:」标记，否则视为未作答；
+  - 空预测一律 `reward=0.0`；
+  - 题库加载与判分两处都剔除「normalize 后为空」的答案；无有效答案的题返回 `None` 并由调用方跳过；
+  - 三个调用点（拒绝采样 / GRPO / 规则 RL）均加 `None` 保护，避免 `TypeError`。
+
+- **jsonl 路径步数估算**：原实现用「行数 // batch_size」估算 `est_batches_per_epoch`，但 `StreamingJSONLDataset.__iter__` 会跳过空行 / 解析失败 / 无 assistant target 的记录，实际产出少于行数。改为预扫并统计可用样本数，使 warmup / cosine 调度与实际训练量一致。
+
+### 变更范围
+- ultra3：**12 个** 0012 文件（`210 / 212 / 2125 / 310 / 312 / 3125` 的 elite 与 elitelinux）—— 全部改动。
+- 旗舰版：`d:\旗舰版\0.85B1\3120012elitelinux.py` —— 全部改动，并调 `LEARNING_RATE 1.5e-5 → 3.0e-5`、`WARMUP_STEPS_PER_SEGMENT 50 → 200`、`RESUME_SAVE_INTERVAL_STEPS 200 → 500`。
+- release 仓：`v9/` 的 4 个 312 文件（`3120012elite.py`、`3120012elitelinux.py`、`31250012elite.py`、`31250012elitelinux.py`）。
+
+### 边界与注意
+- ✅ **静态校验（实测）**：13 个文件 `ast.parse` + `py_compile` 全通过；BOM 与换行逐字节保持（11 个 1×BOM + LF；`2120012elite.py` 无 BOM + LF）。
+- ✅ **功能实测（CPU、极小模型 H=32/L=2）**：断点中断→重启→续训跑通（`batch_idx` / `optimizer_step` 连续累加、LR 不跳回）；多存档点产生 / 保留 / 任选其一加载跑通；6 个 hack 用例全部被拦截、5 个正常用例全部正确。
+- ⚠️ **未端到端实测（未验证）**：真实配置（H=512/L=15、GPU、`bnb.optim.AdamW8bit`）下未跑。**`bitsandbytes` 8-bit 优化器的 `state_dict` 保存 / 恢复未验证**——代码有 `try/except` 兜底（失败则仅恢复权重并告警），但动量是否真能恢复未知。
+- ⚠️ **未验证**：3 GB 预训练文件的首次 tokenize 耗时；10 万级 jsonl 的预扫耗时。
+- ⚠️ **行为变更**：严格判分要求模型输出 `\boxed{}` / 「答案:」格式。若既有权重未学过该格式，RL 初期 reward 可能长期为 0（预期行为，非缺陷）。
+- ⚠️ **磁盘**：每段 epoch 末 + 每次 `Ctrl+C` 各产生一个全量存档点（0012 约 850 MB / 个）；`RESUME_SAVE_INTERVAL_STEPS` 只写几 KB 的 json，**不产生 `.pt`**。
+
+---
+
 ## 9.3.0 — 2026-10-21
 
 > 定位：**0012 训练步 CUDA Graph 从「仅 batch=1」扩展为「任意 batch」+ 修复 torch ≥ 2.13 的 stale capture stream 校验**（**只改 `TrainStepGraphRunner` 的缓冲、缓存与捕获流，不改模型结构 / 数学语义 / 训练配置**）。
