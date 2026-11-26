@@ -874,23 +874,52 @@ class FastBPE:
 # 学习率调度器
 # ------------------------------------------------------------
 class WarmupCosineScheduler(_LRScheduler):
-    def __init__(self, optimizer, warmup_steps: int, decay_steps=None, eta_min: float = 0.1, last_epoch: int = -1):
+    """P37：预热 + 余弦退火调度器。
+
+    向后兼容：global_total<=0 且 start_factor=None 时，与旧版逐位一致。
+    新增（用于跨段连续退火）：
+      global_start / global_total：绝对进度 = (global_start + step) / global_total
+      start_factor：本段第 1 步的 LR 比例（= 上段末 factor），段首 warmup 时从它平滑过渡，
+                    避免「段末低 LR → 段首冲回峰值」的跳变。
+    """
+
+    def __init__(self, optimizer, warmup_steps: int, decay_steps=None, eta_min: float = 0.1,
+                 last_epoch: int = -1, global_start: int = 0, global_total: int = 0,
+                 start_factor: float = None):
         self.warmup_steps = warmup_steps
         self.decay_steps = decay_steps
         self.eta_min = eta_min
+        self.global_start = int(global_start or 0)
+        self.global_total = int(global_total or 0)
+        self.start_factor = start_factor
         super().__init__(optimizer, last_epoch)
+
+    def _raw_factor(self, abs_step: int) -> float:
+        """给定（全局）步数返回 LR 比例，不含段首接续修正。"""
+        if self.global_total > 0:
+            # 跨段连续退火：单个长 cosine 横跨全部段
+            progress = min(max(abs_step, 0) / float(self.global_total), 1.0)
+            return self.eta_min + (1.0 - self.eta_min) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        # ------- 以下为每段独立 cosine（旧行为） -------
+        if abs_step < self.warmup_steps:
+            return self.eta_min + (1.0 - self.eta_min) * (abs_step + 1) / (self.warmup_steps + 1e-8)
+        if self.decay_steps is not None:
+            t = abs_step - self.warmup_steps
+            progress = min(t / self.decay_steps, 1.0)
+            return self.eta_min + (1.0 - self.eta_min) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        t = abs_step - self.warmup_steps
+        return self.eta_min + (1.0 - self.eta_min) * (self.warmup_steps / (self.warmup_steps + t)) ** 0.5
 
     def get_lr(self):
         step = self.last_epoch
-        if step < self.warmup_steps:
-            factor = self.eta_min + (1.0 - self.eta_min) * (step + 1) / (self.warmup_steps + 1e-8)
-        elif self.decay_steps is not None:
-            t = step - self.warmup_steps
-            progress = min(t / self.decay_steps, 1.0)
-            factor = self.eta_min + (1.0 - self.eta_min) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        target = self._raw_factor(self.global_start + step)
+        if self.start_factor is not None and step < self.warmup_steps:
+            # 段首平滑接续：从 start_factor 线性过渡到 target，杜绝跳变
+            w = max(int(self.warmup_steps), 1)
+            k = min((step + 1) / (w + 1e-8), 1.0)
+            factor = self.start_factor + (target - self.start_factor) * k
         else:
-            t = step - self.warmup_steps
-            factor = self.eta_min + (1.0 - self.eta_min) * (self.warmup_steps / (self.warmup_steps + t)) ** 0.5
+            factor = target
         return [base_lr * factor for base_lr in self.base_lrs]
 
 
@@ -3770,8 +3799,50 @@ def train_from_scratch(model: WaveSNN, tokenizer: FastBPE,
     total_updates = total_updates_per_epoch * epochs
     warmup_steps = min(WARMUP_STEPS_PER_SEGMENT, max(1, total_updates))
     decay_steps = max(1, total_updates - warmup_steps) if total_updates > 0 else None
-    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=warmup_steps, decay_steps=decay_steps, eta_min=COSINE_ETA_MIN / LEARNING_RATE)
-    log_and_print(f"训练总参数更新次数 = {total_updates}, 预热步数 = {warmup_steps}, 初始学习率 = {lr}")
+    # ---------------- P37：eta_min 用比例 + 跨段连续退火 ----------------
+    _g_start = 0
+    _g_total = 0
+    _start_factor = None
+    if CROSS_SEGMENT_COSINE:
+        # 优先级 1：从已恢复的 scheduler 状态读跨段进度
+        _se = None
+        if SAVE_OPTIMIZER_STATE and _PENDING_BRAIN_CKPT and 'scheduler_extra' in _PENDING_BRAIN_CKPT:
+            _se = _PENDING_BRAIN_CKPT.get('scheduler_extra') or {}
+        if _se and _se.get('global_total'):
+            _g_start = int(_se.get('global_start') or 0) + total_updates
+            _g_total = int(_se.get('global_total') or 0)
+            _start_factor = _se.get('last_factor')
+            log_and_print("跨段连续退火：global %d/%d，段首接续 factor=%.4f"
+                          % (_g_start, _g_total, _start_factor or 0.0))
+        # 优先级 2：无断点 ⇒ 本段自己构成一个完整周期（global_total = 本段总步数）
+        else:
+            _g_start = 0
+            _g_total = total_updates
+            _start_factor = None
+            log_and_print("退火模式：本段独立完成一个完整 cosine 周期（%d 步）" % _g_total)
+
+    if LR_RATIO_ETA_MIN_ENABLED:
+        _eta_min = float(LR_RATIO_ETA_MIN)
+    else:
+        _eta_min = COSINE_ETA_MIN / max(LEARNING_RATE, 1e-30)
+
+    scheduler = WarmupCosineScheduler(
+        optimizer, warmup_steps=warmup_steps, decay_steps=decay_steps,
+        eta_min=_eta_min, global_start=_g_start, global_total=_g_total,
+        start_factor=(_start_factor if CROSS_SEGMENT_COSINE else None))
+
+    # 恢复 scheduler 内部计数（若有）
+    if SAVE_OPTIMIZER_STATE and _PENDING_BRAIN_CKPT and 'scheduler_state_dict' in _PENDING_BRAIN_CKPT:
+        try:
+            scheduler.load_state_dict(_PENDING_BRAIN_CKPT['scheduler_state_dict'])
+            log_and_print("已恢复 scheduler 内部计数")
+        except Exception as _e:
+            log_and_print("恢复 scheduler 状态失败（%s），按新调度继续" % _e)
+
+    _pk = optimizer.param_groups[0].get('lr', 0.0)
+    log_and_print("训练总参数更新次数 = %d，预热步数 = %d，峰值学习率 = %g，"
+                  "末/峰比 = %.3f，跨段连续 = %s"
+                  % (total_updates, warmup_steps, lr, _eta_min, CROSS_SEGMENT_COSINE))
     last_grad_norm = 0.0
 
     best_val_ppl = float('inf')
